@@ -186,6 +186,9 @@ class Config:
     # 끊긴 시간과 "Read loop has been closed" 연속 발생 횟수를 추가 재시작 조건으로 쓴다.
     ws_message_max_staleness_sec: float = _float("WS_MESSAGE_MAX_STALENESS_SEC", 45.0)
     ws_max_consecutive_read_loop_errors: int = _int("WS_MAX_CONSECUTIVE_READ_LOOP_ERRORS", 3)
+    # QueueOverflow/Read-loop faults can still receive intermittent messages, which resets
+    # consecutive_read_loop_errors.  A high 60s error count is therefore also a hard fault.
+    ws_max_error_count_60s: int = _int("WS_MAX_ERROR_COUNT_60S", 100)
     # [2026-08-10, Codex 제안 반영] 심볼 전부를 워커 하나(연결 하나의 매니저)에 몰아넣으면
     # 메시지가 한 워커에 집중돼 큐 폭주 확률이 커진다 — 시장데이터를 이 개수만큼의 독립
     # 워커 프로세스로 나눠(각자 별도 ThreadedWebsocketManager) 심볼을 균등 분산한다.

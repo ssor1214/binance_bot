@@ -1959,6 +1959,9 @@ def ws_layer_needs_restart(cfg: Config, handles: dict, canary_symbol: str) -> li
         if last_msg_ts and time.time() - last_msg_ts > cfg.ws_message_max_staleness_sec:
             stale_indices.append(idx)
             continue
+        if health.get("error_count_60s", 0) >= cfg.ws_max_error_count_60s:
+            stale_indices.append(idx)
+            continue
         if health.get("consecutive_read_loop_errors", 0) >= cfg.ws_max_consecutive_read_loop_errors:
             stale_indices.append(idx)
             continue

@@ -281,6 +281,21 @@ class WsLayerNeedsRestartHealthBasedTests(unittest.TestCase):
             }
             self.assertEqual(ws_layer_needs_restart(cfg, self._handles_past_grace(), "BTCUSDT"), [0])
 
+    def test_flagged_when_error_count_60s_exceeds_threshold_even_if_messages_continue(self):
+        """QueueOverflow 폭주 중에도 간헐적 메시지가 들어오면 consecutive 에러가 1로 리셋될 수 있다.
+        이 경우 error_count_60s 자체가 높은 샤드를 고장으로 봐야 한다."""
+        cfg = make_cfg(ws_market_data_enabled=True, ws_max_error_count_60s=100)
+        now = 1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 100
+        with patch("bot.main.time.time", return_value=now), \
+             patch("bot.main.FileBackedKlineCache") as fake_cache_cls:
+            fake_cache_cls.return_value.is_fresh.return_value = True
+            fake_cache_cls.return_value.health.return_value = {
+                "last_market_message_ts": now - 1,
+                "error_count_60s": 101,
+                "consecutive_read_loop_errors": 1,
+            }
+            self.assertEqual(ws_layer_needs_restart(cfg, self._handles_past_grace(), "BTCUSDT"), [0])
+
     def test_empty_when_all_health_signals_healthy(self):
         cfg = make_cfg(ws_market_data_enabled=True)
         now = 1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 100
@@ -289,6 +304,7 @@ class WsLayerNeedsRestartHealthBasedTests(unittest.TestCase):
             fake_cache_cls.return_value.is_fresh.return_value = True
             fake_cache_cls.return_value.health.return_value = {
                 "last_market_message_ts": now - 1,
+                "error_count_60s": 0,
                 "consecutive_read_loop_errors": 0,
             }
             self.assertEqual(ws_layer_needs_restart(cfg, self._handles_past_grace(), "BTCUSDT"), [])
