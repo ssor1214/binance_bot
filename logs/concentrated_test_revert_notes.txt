@@ -1,0 +1,64 @@
+[2026-08-11] 매매 방식 기준 변경 — "슬롯매매"가 이제 기본값(원복 대상 아님)
+
+이 파일은 원래 "5시간 한시적 테스트, 끝나면 원복"용 기록이었으나, 2026-08-11 사용자가
+명시적으로 방침을 바꿨다: "기존 매매(물타기 방식)는 버리고, 슬롯매매 vs 스캘핑매매로
+기준을 바꾸자. 슬롯매매는 내일로 종료가 아닌 기본값이다."
+
+=== 현재 두 가지 매매 모드 ===
+- **슬롯매매 (현재 기본값, 2026-08-10 20:13~)**: 물타기 없음, 슬롯 예산(13.33%) 전액을
+  초기진입 1회에 배정. 실측(20:13~08-11 00:xx, 55건): 승률 74.5%, 손익비 1.65,
+  시간당손익 +0.13~0.73USDT. 기존 물타기 방식(승률59.8%, 손익비0.70, 시간당손익 적자)
+  대비 뚜렷하게 우수 — 더 이상 "테스트"가 아니라 이게 기본 운영 방식이다.
+- **스캘핑매매 (WS 안정화 완료 후 전환 예정, 아직 미적용)**: WS 레이어(샤딩+워치독)로
+  REST 폴링 지연(현재 평균 40.7초/사이클)을 없애 반응속도를 높이는 방식. 2026-08-11
+  기준 진행상황: ①50×2 60분 재검증 통과(MemoryError/ReadLoop/QueueOverflow 0건),
+  ②워치독 실제 복구 테스트 진행 중. 이 2개만 통과하면 WS_MARKET_DATA_ENABLED=true로
+  시장데이터 WS부터 투입 예정(User Data Stream은 다음 단계로 보류).
+
+=== 예전(물타기) 방식 값 — 참고용으로만 남김, 되돌릴 계획 없음 ===
+POSITION_SIZE_MIN=0.2 / POSITION_SIZE_MAX=0.4 / POSITION_SIZE_STEP=0.1
+SMALL_BALANCE_MAX_RATIO=0.4 / MAX_POSITIONS_HIGH=8 / AVERAGE_DOWN_ENABLED=true
+AVERAGE_DOWN_TRIGGER_RATIO=0.5 / AVERAGE_DOWN_SIZE_RATIO=0.5 / RISK_BASED_SIZING_ENABLED=true
+
+=== 슬롯매매(기본값) 현재 .env 값 ===
+POSITION_SIZE_MIN=0.1333   # 슬롯 예산 전액을 초기진입에
+POSITION_SIZE_MAX=0.1333
+POSITION_SIZE_STEP=0
+SMALL_BALANCE_MAX_RATIO=0.1333
+MAX_POSITIONS_LOW=3        # 60%노출 요청은 백테스트로 거절, 30%(슬롯당10%) 유지로 합의
+MAX_POSITIONS_HIGH=3
+AGGRESSIVE_MAX_POSITIONS=3
+AVERAGE_DOWN_ENABLED=false
+AVERAGE_DOWN_TRIGGER_RATIO=0.5
+AVERAGE_DOWN_SIZE_RATIO=0.045
+RISK_BASED_SIZING_ENABLED=false
+LIMIT_ENTRY_ENABLED=true
+LIMIT_ENTRY_WAIT_SEC=8.0
+AVERAGE_DOWN_MAX_TOTAL_MARGIN_RATIO=0.1333
+TAKE_PROFIT_MIN=3.0
+SHORT_TAKE_PROFIT_MIN=3.0
+SWING_STREAK_CANDLES=8
+SWING_CUMULATIVE_THRESHOLD_RATIO=0.6
+
+=== 별도 사안: 서킷브레이커 2종, "오늘만" 비활성화 (슬롯매매 기본값 채택과는 무관) ===
+아래 둘은 슬롯매매 채택과 별개로, 사용자가 "오늘은 작동 안 하게" 명시적으로 요청해서
+임계값을 999(사실상 무제한)로 걸어둔 것 — 슬롯매매가 영구 기본값이 된 것과 달리, 이건
+계속 켜둘 계획이 아니므로 다음에 사용자가 재활성화 요청하면 되돌릴 것.
+DAILY_LOSS_LIMIT_PCT=999      # 원복시 15로 (2026-08-11 999로 방치돼있던 걸 발견해 15로
+                               # 고쳤다가 "오늘은 서킷브레이커 작동 안 하게" 요청으로 도로 999)
+DAILY_LOSS_PAUSE_HOURS=4      # 로직은 완성(트리거시 4시간 후 자동재개), 999라 지금은 무의미
+GLOBAL_LOSS_STREAK_THRESHOLD=999   # 원복시 5로 (또는 줄 삭제 — 기본값 5)
+
+=== 슬롯매매 채택 배경(백테스트 근거) ===
+사용자 실측 불만: "건당 0.1~0.2달러라 전기세보다 못 번다". 원인: 초기진입 1.5% 고정 +
+물타기(최대 11.83%p 추가)에 의존하는 구조라, 물타기 없이 끝나는 거래는 원금 자체가 작았음
+(백테스트 실측 건당평균이익 0.048USDT). 물타기 여유분을 없애고 슬롯예산(13.33%) 전액을
+초기진입에 배정 -> 백테스트: 승률 58.3%->57.4%(거의 동일), 수익률 +6.9%->+73.8%,
+건당평균이익 0.048->0.403USDT, 시간당수익 최대(+0.341USDT/h). 대신 물타기 완충 여유가
+없어져 최대낙폭이 잔고대비 2.3%->20.8%로 커짐(사용자 인지 후 승인). 실거래에서도
+승률56%->76%, 손익비0.63->1.65, 시간당손익 -0.777->+0.734로 재확인됨.
+
+백테스트(concentrated_avgdown_result.json, 마진상한 6% 버전) 재현 방법:
+- 초기진입 1.5% 마진, 1회 물타기(트리거: 손절폭의 50% 지점)로 4.5% 추가 = 총 6% 마진 상한
+- 원래 3트랜치(25/50/25) 백테스트를 기존 라이브 코드의 단일 물타기 메커니즘으로 근사
+- 단일 포지션만(MAX_POSITIONS=1)이라 "가장 점수 좋은 코인 1개"를 자연히 만족
