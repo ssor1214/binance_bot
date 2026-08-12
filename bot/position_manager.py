@@ -47,6 +47,9 @@ class TrackedPosition:
     exchange_trailing_widened: bool = False
     # [2026-08-09] TRAILING_STOP_MARKET 등록 실패시의 거래소측 폴백 익절 주문 ID.
     tp_fallback_order_id: int | None = None
+    # [2026-08-11 사용자요청] 진입 직후 유예기간 동안 손절폭을 넓혀 걸어뒀는지 여부 — True면
+    # reconcile 루프가 유예기간 만료 시 원래 폭으로 다시 좁혀야 한다는 표시.
+    stop_loss_widened: bool = False
 
     @property
     def protection_state(self) -> str:
@@ -95,6 +98,14 @@ class PositionManager:
       이후 최고점(peak_pnl) 대비 1%p 이상 하락하면 익절(수익 3~7% 구간에서 확정).
     - pnl이 -stop_loss_pct(-5%) 이하이면 즉시 손절.
     """
+
+    def _stop_loss_pct_for(self, side: str) -> float:
+        """[2026-08-11 사용자요청] SHORT만 손절폭을 따로 조이기 위한 헬퍼. SHORT_STOP_LOSS_PCT가
+        0(기본값)이면 기존처럼 공용 stop_loss_pct를 쓰고, 양수면 SHORT 포지션에서만 그 값을
+        쓴다(LONG은 항상 공용 stop_loss_pct 그대로)."""
+        if side == "SHORT" and self.cfg.short_stop_loss_pct > 0:
+            return self.cfg.short_stop_loss_pct
+        return self.cfg.stop_loss_pct
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -478,8 +489,9 @@ class PositionManager:
         # 트랜치마다 더 깊은 지점에서 발동하도록 (N번째 추가는 손절폭의 trigger_ratio*N 지점).
         # 손절 경계(-stop_loss_pct) 자체를 절대 넘지 않도록 0.95배로 캡한다.
         depth_ratio = min(0.95, self.cfg.average_down_trigger_ratio * (pos.average_down_count + 1))
-        trigger_roe = -self.cfg.stop_loss_pct * depth_ratio
-        return trigger_roe >= roe > -self.cfg.stop_loss_pct
+        side_stop_loss_pct = self._stop_loss_pct_for(pos.side)
+        trigger_roe = -side_stop_loss_pct * depth_ratio
+        return trigger_roe >= roe > -side_stop_loss_pct
 
     def apply_average_down(self, symbol: str, new_entry_price: float, new_quantity: float, added_margin_usdt: float = 0.0):
         """물타기 주문 체결 후, 거래소에서 갱신된 평단가/수량으로 추적 정보를 업데이트한다.
@@ -524,8 +536,9 @@ class PositionManager:
         pnl = pnl_pct(pos.entry_price, mark_price, pos.side)
         roe = pnl * pos.leverage
         margin_used = (pos.entry_price * pos.quantity) / pos.leverage if pos.leverage else pos.entry_price * pos.quantity
+        side_stop_loss_pct = self._stop_loss_pct_for(pos.side)
 
-        if roe <= -self.cfg.stop_loss_pct:
+        if roe <= -side_stop_loss_pct:
             log.info("[%s] 손절 조건 충족: ROE=%.2f%% (가격변동=%.2f%%, 레버리지=%sx)", symbol, roe, pnl, pos.leverage)
             return "STOP_LOSS"
 
@@ -536,6 +549,31 @@ class PositionManager:
                 symbol, roe, effective_hard_cap, " (스윙확대)" if swing_continuing else "",
             )
             return "TAKE_PROFIT"
+
+        # [2026-08-11 사용자요청] 순환매매 맛보기 — 보유시간 초과 + 이미 익절 상태(ROE 최소치
+        # 이상)면 트레일링을 기다리지 않고 바로 확정한다. 손실 중이면 이 규칙은 아예 안 보고
+        # 그대로 통과(아래 정상 로직으로 이어짐) — "무조건 청산"이 아니라 "익절일 때만" 강제.
+        # [2026-08-11 실거래 발견/수정] 龙虾USDT 실측: 보유9.1분/ROE1.65%에서 강제확정됐는데
+        # 직후 추가로 4~5%p 더 올라간 채로 놓침 — 다른 트레일링 로직처럼 "지금도 모멘텀이
+        # 강하게 지속 중이면 이번 주기엔 확정을 보류"하는 가드를 추가한다. 대부분의 포지션은
+        # 5분 뒤엔 이미 모멘텀이 식어있어 평소처럼 그대로 확정되고, 지금처럼 "아직 세게
+        # 밀고있는" 소수 케이스만 한 사이클(다음 스캔까지) 더 지켜본다 — 전체 회전속도에는
+        # 거의 영향 없음.
+        if self.cfg.force_profit_exit_max_hold_min > 0:
+            held_minutes = (time.time() - pos.entered_at) / 60
+            if held_minutes >= self.cfg.force_profit_exit_max_hold_min and roe >= self.cfg.force_profit_exit_min_roe:
+                if momentum_continuing:
+                    log.info(
+                        "[%s] 순환매매 강제익절 조건 충족했지만 모멘텀 지속 중 — 이번 주기 보류: "
+                        "보유%.1f분 ROE=%.2f%%",
+                        symbol, held_minutes, roe,
+                    )
+                else:
+                    log.info(
+                        "[%s] 순환매매 강제익절: 보유%.1f분(기준%.0f분 초과) ROE=%.2f%%(기준%.2f%% 이상)",
+                        symbol, held_minutes, self.cfg.force_profit_exit_max_hold_min, roe, self.cfg.force_profit_exit_min_roe,
+                    )
+                    return "TAKE_PROFIT"
 
         fee_estimate = (pos.entry_price * pos.quantity) * self.cfg.fee_rate_roundtrip
         current_profit = profit_usdt(pos, mark_price)
@@ -640,7 +678,7 @@ class PositionManager:
         # (early_exit도 EARLY_EXIT_MIN_LOSS_ROE가 STOP_LOSS_PCT와 같은 값이라 사실상 발동 안 됨).
         # 이미 손절 조건(roe <= -stop_loss_pct)은 위에서 먼저 걸러지므로, 여기 도달했다는 건
         # roe > -stop_loss_pct라는 뜻 — 그 전체 손실 구간을 시간제한 대상으로 잡아야 사각지대가 없다.
-        if roe > -self.cfg.stop_loss_pct:
+        if roe > -side_stop_loss_pct:
             held_minutes = (time.time() - pos.entered_at) / 60
             if held_minutes >= self.cfg.scalp_max_hold_minutes:
                 log.info(

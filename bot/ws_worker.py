@@ -165,7 +165,15 @@ def run() -> None:
     ex = Exchange(cfg)
     symbols = []
     if run_market:
-        all_symbols = ex.get_active_usdt_perpetual_symbols(limit=cfg.max_auto_symbols) if cfg.auto_symbols else cfg.symbols
+        worker_symbols_raw = os.environ.get("WS_WORKER_SYMBOLS", "").strip()
+        if worker_symbols_raw:
+            try:
+                all_symbols = [str(s).strip().upper() for s in json.loads(worker_symbols_raw) if str(s).strip()]
+            except Exception:
+                log.exception("WS_WORKER_SYMBOLS 파싱 실패 — 워커 내부 설정으로 폴백")
+                all_symbols = ex.get_active_usdt_perpetual_symbols(limit=cfg.max_auto_symbols) if cfg.auto_symbols else cfg.symbols
+        else:
+            all_symbols = ex.get_active_usdt_perpetual_symbols(limit=cfg.max_auto_symbols) if cfg.auto_symbols else cfg.symbols
         # [2026-08-10, Codex 제안 반영] 샤드 개수만큼 심볼을 나눠 맡는다. 연속 구간이 아니라
         # interleave(0,2,4,...) 방식으로 나눠서, 거래대금 순위가 한쪽 샤드에 몰리지 않고
         # 고르게 분산되게 한다(순위 상위/하위가 섞여야 부하도 고르게 나뉨).
@@ -173,7 +181,7 @@ def run() -> None:
         log.info("이 워커(샤드 %d/%d) 담당 심볼 %d개(전체 %d개 중)", SHARD_INDEX, SHARD_COUNT, len(symbols), len(all_symbols))
 
     kline_cache = RollingKlineCache(max_len=cfg.ws_kline_history_len)
-    fill_tracker = FillTracker() if run_user else None
+    fill_tracker = FillTracker(log_events=True, event_log_dir=LOG_DIR) if run_user else None
     # [2026-08-10, Codex 제안 반영] 메시지 수신/에러 상태를 별도로 추적 — 하트비트 파일이
     # 갱신되는 것만으로는 "read loop가 실제로 살아서 데이터를 받는지"를 알 수 없다.
     health = WsHealthMonitor() if run_market else None

@@ -60,6 +60,17 @@ TUNABLE_PARAMS = {
     "LEVERAGE_MIN": ("leverage_min", int, 1, 10),
     "LEVERAGE_MAX": ("leverage_max", int, 1, 20),
     "BTC_SUDDEN_MOVE_PCT": ("btc_sudden_move_pct", float, 0.3, 5.0),
+    # [2026-08-11 사용자요청] "30분마다 복기하고 개선 제안은 텔레그램 승인/직접요청으로만" —
+    # 복기 결과가 제안할 수 있는 대상 파라미터들을 추가.
+    "SHORT_STOP_LOSS_PCT": ("short_stop_loss_pct", float, 0.0, 6.0),
+    "STOP_LOSS_GRACE_SEC": ("stop_loss_grace_sec", float, 0.0, 180.0),
+    "STOP_LOSS_GRACE_WIDEN_MULT": ("stop_loss_grace_widen_mult", float, 1.0, 3.0),
+    "TRAIL_DRAWDOWN_PCT": ("trail_drawdown_pct", float, 0.3, 3.0),
+    "STALE_SIGNAL_TOLERANCE_PCT": ("stale_signal_tolerance_pct", float, 0.15, 1.5),
+    "MAX_ATR_VS_STOP_RATIO": ("max_atr_vs_stop_ratio", float, 0.0, 8.0),
+    "SOFT_STOP_MIN_HOLD_SEC": ("soft_stop_min_hold_sec", float, 0.0, 180.0),
+    "POSITION_SIZE_MIN": ("position_size_min", float, 0.05, 0.30),
+    "POSITION_SIZE_MAX": ("position_size_max", float, 0.05, 0.30),
 }
 
 # TUNABLE_PARAMS 키를 텔레그램 화면에 표시할 때 쓰는 한글 설명. 영문 KEY 그대로 보여주면
@@ -80,6 +91,15 @@ TUNABLE_PARAMS_KO = {
     "LEVERAGE_MIN": "최소 레버리지",
     "LEVERAGE_MAX": "최대 레버리지",
     "BTC_SUDDEN_MOVE_PCT": "BTC 급변동 감지 기준(%)",
+    "SHORT_STOP_LOSS_PCT": "숏 전용 손절폭(ROE %, 0=공용값 사용)",
+    "STOP_LOSS_GRACE_SEC": "진입직후 손절 유예시간(초)",
+    "STOP_LOSS_GRACE_WIDEN_MULT": "유예기간 중 손절폭 확장배수",
+    "TRAIL_DRAWDOWN_PCT": "트레일링 콜백폭 기준(%)",
+    "STALE_SIGNAL_TOLERANCE_PCT": "신호 스캔 후 허용 가격이탈(%)",
+    "MAX_ATR_VS_STOP_RATIO": "휩쏘필터 변동성 상한배수",
+    "SOFT_STOP_MIN_HOLD_SEC": "SOFT_STOP 최소 보유시간(초)",
+    "POSITION_SIZE_MIN": "슬롯당 최소 비중",
+    "POSITION_SIZE_MAX": "슬롯당 최대 비중",
 }
 
 
@@ -102,6 +122,16 @@ class Config:
     position_size_step: float = _float("POSITION_SIZE_STEP", 0.1)
     small_balance_threshold: float = _float("SMALL_BALANCE_THRESHOLD", 100.0)
     small_balance_max_ratio: float = _float("SMALL_BALANCE_MAX_RATIO", 1.0)
+    # If the account has already fallen into survival mode, stop opening new
+    # positions and keep managing only existing exposure.  Recovery mode below
+    # re-opens only the strongest one-shot candidates so a tiny balance can
+    # still try to climb back without fanning out into low-quality churn.
+    low_balance_new_entry_pause_threshold: float = _float("LOW_BALANCE_NEW_ENTRY_PAUSE_THRESHOLD", 25.0)
+    low_balance_recovery_enabled: bool = _bool("LOW_BALANCE_RECOVERY_ENABLED", "true")
+    low_balance_recovery_max_positions: int = _int("LOW_BALANCE_RECOVERY_MAX_POSITIONS", 3)
+    low_balance_recovery_min_probability: float = _float("LOW_BALANCE_RECOVERY_MIN_PROBABILITY", 0.80)
+    low_balance_recovery_min_score: float = _float("LOW_BALANCE_RECOVERY_MIN_SCORE", 0.68)
+    low_balance_recovery_size_mult: float = _float("LOW_BALANCE_RECOVERY_SIZE_MULT", 0.75)
 
     balance_tier_threshold: float = _float("BALANCE_TIER_THRESHOLD", 300.0)
     max_positions_low: int = _int("MAX_POSITIONS_LOW", 3)
@@ -116,7 +146,19 @@ class Config:
     take_profit_max: float = _float("TAKE_PROFIT_MAX", 7.0)
     take_profit_hard_cap: float = _float("TAKE_PROFIT_HARD_CAP", 8.0)
     stop_loss_pct: float = _float("STOP_LOSS_PCT", 5.0)
+    # [2026-08-11 사용자요청] SHORT만 승률/손익이 저조해 손절폭을 따로 조이고 싶은데,
+    # stop_loss_pct는 LONG/SHORT 공용이라 그대로 바꾸면 잘 되고 있는 LONG까지 같이 영향
+    # 받는다. 0(기본값)이면 기존처럼 stop_loss_pct를 그대로 쓰고, 양수를 넣으면 SHORT
+    # 포지션에서만 이 값을 쓴다(LONG은 영향 없음).
+    short_stop_loss_pct: float = _float("SHORT_STOP_LOSS_PCT", 0.0)
     trail_drawdown_pct: float = _float("TRAIL_DRAWDOWN_PCT", 0.5)
+    # [2026-08-11 사용자요청] "순환매매 맛보기" — 보유시간이 이 분(分)을 넘겼는데 ROE가
+    # 최소치 이상(익절 상태)이면, 트레일링 조건을 기다리지 않고 바로 확정한다. 손실 중이거나
+    # 이 최소치 미만이면 이 규칙은 개입하지 않고 기존 로직(트레일링/손절)을 그대로 따른다 —
+    # "5분 지나면 무조건 청산"이 아니라 "5분 지나고 이미 이기고 있으면 더 안 기다린다"는
+    # 뜻. 0이면 비활성화(기존 동작 그대로).
+    force_profit_exit_max_hold_min: float = _float("FORCE_PROFIT_EXIT_MAX_HOLD_MIN", 0.0)
+    force_profit_exit_min_roe: float = _float("FORCE_PROFIT_EXIT_MIN_ROE", 1.5)
     # [2026-08-10 실거래 분석 발견] 거래소에 걸어둔 TRAILING_STOP_MARKET의 callbackRate를
     # 지금까지 trail_drawdown_pct와 정확히 같은 폭으로 계산해왔다 — 그런데 거래소 주문은
     # 틱 단위로 즉시 반응하고 봇은 폴링(타이머) 기반이라, 폭이 같으면 거래소가 사실상 항상
@@ -185,6 +227,12 @@ class Config:
     # kline freshness(150초, 캔들 "마감" 기준)만으로는 감지가 너무 늦다. 실시간 메시지 자체가
     # 끊긴 시간과 "Read loop has been closed" 연속 발생 횟수를 추가 재시작 조건으로 쓴다.
     ws_message_max_staleness_sec: float = _float("WS_MESSAGE_MAX_STALENESS_SEC", 45.0)
+    # Watchdog canary uses closed 1m klines, so it must not share the trading
+    # cache freshness threshold.  A 20s trading freshness threshold is valid for
+    # REST fallback, but it would falsely restart a healthy shard between closed
+    # 1m candles.  Keep the watchdog canary looser and let message health catch
+    # real stream stalls quickly.
+    ws_canary_max_staleness_sec: float = _float("WS_CANARY_MAX_STALENESS_SEC", 120.0)
     ws_max_consecutive_read_loop_errors: int = _int("WS_MAX_CONSECUTIVE_READ_LOOP_ERRORS", 3)
     # QueueOverflow/Read-loop faults can still receive intermittent messages, which resets
     # consecutive_read_loop_errors.  A high 60s error count is therefore also a hard fault.
@@ -239,6 +287,10 @@ class Config:
     # all new scans. Set EV_FILTER_HARD_PAUSE=true to restore the old behavior.
     ev_filter_hard_pause: bool = _bool("EV_FILTER_HARD_PAUSE", "false")
     ev_defense_size_mult: float = _float("EV_DEFENSE_SIZE_MULT", 0.75)
+    # Keep the 12~18 trades/hour target feasible: symbol-level negative EV does
+    # not remove a symbol from scans by default. It stays tradable but is
+    # ranked/sized down.
+    negative_ev_symbol_size_mult: float = _float("NEGATIVE_EV_SYMBOL_SIZE_MULT", 0.60)
 
     rsi_period: int = _int("RSI_PERIOD", 14)
     rsi_oversold: float = _float("RSI_OVERSOLD", 30)
@@ -280,7 +332,7 @@ class Config:
     min_entry_probability: float = _float("MIN_ENTRY_PROBABILITY", 0.70)
     # 숏은 손실이 잦아서(급반등에 취약) 롱보다 더 까다로운 확률 기준과 더 작은 비중을 적용
     short_min_entry_probability: float = _float("SHORT_MIN_ENTRY_PROBABILITY", 0.78)
-    short_size_multiplier: float = _float("SHORT_SIZE_MULTIPLIER", 0.6)
+    short_size_multiplier: float = _float("SHORT_SIZE_MULTIPLIER", 0.5)
     # 숏은 스윙이 아니라 스캘핑으로만 진입한다: 텔레그램 분석과 같은 100점 만점 종합점수가
     # 이 값 이상이고, 5분 내 목표 익절(SHORT_TAKE_PROFIT_MIN)에 도달할 가능성이 있을 때만 진입한다.
     short_min_total_score: float = _float("SHORT_MIN_TOTAL_SCORE", 65.0)
@@ -296,6 +348,18 @@ class Config:
     # 커지는 순간 기대값이 무너질 수 있으므로, 진입 직전 스프레드가 이 기준을 넘으면
     # 해당 후보만 건너뛴다. 네트워크/조회 실패시에는 기존 동작을 유지하기 위해 막지 않는다.
     max_entry_spread_pct: float = _float("MAX_ENTRY_SPREAD_PCT", 0.18)
+    one_min_noise_filter_enabled: bool = _bool("ONE_MIN_NOISE_FILTER_ENABLED", "true")
+    one_min_noise_max_wick_body_ratio: float = _float("ONE_MIN_NOISE_MAX_WICK_BODY_RATIO", 2.5)
+    # [2026-08-12 백테스트] SHORT 스캘핑 신호 1분봉이 저가에서 0.5% 이상 되감겨 마감하면
+    # 아래꼬리/흡수 후 반등으로 보고 SHORT 진입을 제외한다. 5일 1m 백테스트에서
+    # SHORT 손익 -10.3960 -> +2.7449, validation 순손익 -3.4363 -> +1.7357로 개선.
+    short_scalp_max_close_from_low_pct: float = _float("SHORT_SCALP_MAX_CLOSE_FROM_LOW_PCT", 0.5)
+    # Do not block trades for a possible SHORT snapback; keep the scalp loop active,
+    # but rank these candidates behind cleaner setups and reduce their size.
+    short_reversal_risk_enabled: bool = _bool("SHORT_REVERSAL_RISK_ENABLED", "true")
+    short_reversal_risk_priority_penalty: float = _float("SHORT_REVERSAL_RISK_PRIORITY_PENALTY", 0.08)
+    short_reversal_risk_size_mult: float = _float("SHORT_REVERSAL_RISK_SIZE_MULT", 0.65)
+    low_balance_recovery_skip_two_candle_confirmation: bool = _bool("LOW_BALANCE_RECOVERY_SKIP_TWO_CANDLE_CONFIRMATION", "true")
 
     # 1분봉 신호가 나온 후, 이 상위 시간대들의 추세와 같은 방향인지 최종 확인 (스캘핑 신호를 더 확실하게)
     mtf_timeframes: list = field(default_factory=lambda: [
@@ -319,6 +383,24 @@ class Config:
     # 진입 후 바로 손절되는 잦은 whipsaw를 줄이기 위해,
     # 최근 5분봉 변동성이 손절폭 대비 이 정도는 되어야 진입한다.
     min_atr_vs_stop_ratio: float = _float("MIN_ATR_VS_STOP_RATIO", 0.8)
+    # [2026-08-11 사용자요청] "휩쏘 필터가 하한선만 있다" — 변동성이 너무 작을 때만 걸러내고
+    # 너무 클 때(=노이즈가 손절폭보다 훨씬 커서 방향과 무관하게 스탑에 스치기 쉬운 상황)는
+    # 걸러내지 못하고 있었다. SHORT 손절의 39%가 진입 1분 이내(순수 STOP_LOSS 중앙값
+    # 1.84분)에 발생한 실측 근거로 상한선을 추가한다. 5분봉 ATR%가 손절폭의 이 배수를
+    # 넘으면(기본 4배) 너무 날뛰는 걸로 보고 진입을 생략한다. 0이면 비활성화(기존 동작 유지).
+    max_atr_vs_stop_ratio: float = _float("MAX_ATR_VS_STOP_RATIO", 4.0)
+    # [2026-08-11 사용자요청] 진입 직후 짧은 유예기간 동안은 손절폭을 이 배수만큼 넓혀서(거래소
+    # STOP_MARKET은 항상 유지 — 무보호 구간 없음) 진입 직후의 순간적 되돌림(휩쏘)에 스탑이
+    # 스치는 걸 줄인다. 유예기간이 지나면 다음 주기 정합성 점검(reconcile) 루프에서 자동으로
+    # 원래 폭으로 다시 좁힌다. 0이면 비활성화(기존 동작 그대로, 항상 기본 손절폭).
+    stop_loss_grace_sec: float = _float("STOP_LOSS_GRACE_SEC", 0.0)
+    stop_loss_grace_widen_mult: float = _float("STOP_LOSS_GRACE_WIDEN_MULT", 1.5)
+    # [2026-08-11 사용자요청] check_hourly_soft_stop이 "새 1시간봉 첫 체크"라는 조건만 보고
+    # 최소 보유시간 가드가 없어서, 진입 직후(실측 4.8초/9.6초) 순간 노이즈로 ROE가 잠깐
+    # -1.5%(soft_stop_min_loss_roe) 밑으로만 내려가도 바로 발동하는 문제가 LONG에서
+    # 확인됐다(SHORT의 STOP_MARKET 휩쏘와 같은 종류, 다른 경로). 이 초 이내면 SOFT_STOP
+    # 판단 자체를 보류한다. 0이면 비활성화(기존 동작 그대로).
+    soft_stop_min_hold_sec: float = _float("SOFT_STOP_MIN_HOLD_SEC", 60.0)
     # true면 신규 진입 스캔 자체를 완전히 쉰다 (기존 보유 포지션 관리는 그대로 계속함).
     # 지표 재설계/검증 중 신규 진입을 완전히 멈춰야 할 때 사용.
     pause_new_entries: bool = _bool("PAUSE_NEW_ENTRIES", "false")
@@ -377,6 +459,10 @@ class Config:
     # 이 시간(초) 안에 체결 안 되면 취소하고 진입을 포기한다(시장가로 쫓아가지 않음 — 그게
     # 이 기능의 핵심 목적인 "리스크 최소화"를 지키는 부분).
     limit_entry_wait_sec: float = _float("LIMIT_ENTRY_WAIT_SEC", 8.0)
+    # 최근 30분 0% 승률 원인 중 하나가 진입 직후 1~3분 역행이었다. 거래수를 줄이는
+    # 차단 필터 대신, 지정가를 호가보다 아주 조금 유리하게 놓아 캔들 끝단 추격 진입을 줄인다.
+    # LONG은 bid 아래, SHORT는 ask 위. 0이면 기존 호가 그대로.
+    limit_entry_pullback_pct: float = _float("LIMIT_ENTRY_PULLBACK_PCT", 0.0)
 
     # 1) 유동성 얇은 시간대(UTC 기준 시각)에는 신규 진입을 쉰다
     blocked_hours_utc: list = field(default_factory=lambda: [

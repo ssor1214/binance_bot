@@ -63,10 +63,13 @@ class Settings:
     leverage: float = 4.0
     max_positions: int = 3
     margin_fraction: float = 0.20
+    long_margin_fraction_mult: float = 1.0
+    short_margin_fraction_mult: float = 1.0
     fee_rate: float = 0.0004
     slippage_bps: float = 5.0
     funding_rate_8h: float = 0.0
     stop_roe_pct: float = 5.0
+    short_stop_roe_pct: float = 5.0
     take_profit_roe_pct: float = 3.0
     hard_take_profit_roe_pct: float = 7.0
     trailing_drawdown_roe_pct: float = 1.0
@@ -76,12 +79,19 @@ class Settings:
     taker_ratio: float = 0.55
     adx_threshold: float = 20.0
     min_avg_quote_volume: float = 150.0
+    min_atr_vs_stop_ratio: float = 0.8
+    max_atr_vs_stop_ratio: float = 4.0
+    limit_entry_pullback_bps: float = 0.0
     trade_sides: str = "both"
     short_volume_ratio: float = 2.6
     short_candle_change_pct: float = 0.45
     short_taker_buy_ratio_max: float = 0.43
     short_adx_threshold: float = 24.0
     short_rsi_max: float = 45.0
+    short_max_lower_wick_body_ratio: float = 0.0
+    short_max_close_from_low_pct: float = 0.0
+    long_max_upper_wick_body_ratio: float = 0.0
+    long_max_close_from_high_pct: float = 0.0
     average_down: bool = False
     average_down_trigger_ratio: float = 0.5
     average_down_size_ratio: float = 0.5
@@ -100,6 +110,18 @@ class Position:
     trailing_armed: bool = False
     average_down_done: bool = False
     funding: float = 0.0
+    max_adverse_roe: float = 0.0
+    max_favorable_roe: float = 0.0
+
+
+def _adverse_roe(pos: Position, candle: Candle, settings: Settings) -> float:
+    adverse_price = candle.low if pos.side == "LONG" else candle.high
+    return (adverse_price / pos.entry_price - 1) * (1 if pos.side == "LONG" else -1) * settings.leverage * 100
+
+
+def _favorable_roe(pos: Position, candle: Candle, settings: Settings) -> float:
+    favorable_price = candle.high if pos.side == "LONG" else candle.low
+    return (favorable_price / pos.entry_price - 1) * (1 if pos.side == "LONG" else -1) * settings.leverage * 100
 
 
 def _ema(values: list[float], period: int) -> float:
@@ -136,6 +158,67 @@ def _adx(candles: list[Candle], period: int = 14) -> float:
     return 0.0 if pdi + mdi == 0 else 100 * abs(pdi - mdi) / (pdi + mdi)
 
 
+def _atr(candles: list[Candle], period: int = 14) -> float:
+    if len(candles) <= period:
+        return 0.0
+    tr = []
+    for prev, curr in zip(candles[-period - 1:-1], candles[-period:]):
+        tr.append(max(curr.high - curr.low, abs(curr.high - prev.close), abs(curr.low - prev.close)))
+    return sum(tr) / period if tr else 0.0
+
+
+def _passes_whipsaw_filter(history: list[Candle], side: str, settings: Settings) -> bool:
+    current = history[-1]
+    if current.close <= 0:
+        return False
+    atr_pct = (_atr(history) / current.close) * 100
+    stop_roe = settings.short_stop_roe_pct if side == "SHORT" and settings.short_stop_roe_pct > 0 else settings.stop_roe_pct
+    stop_dist_pct = stop_roe / settings.leverage
+    if settings.min_atr_vs_stop_ratio > 0 and atr_pct < stop_dist_pct * settings.min_atr_vs_stop_ratio:
+        return False
+    if settings.max_atr_vs_stop_ratio > 0 and atr_pct > stop_dist_pct * settings.max_atr_vs_stop_ratio:
+        return False
+    return True
+
+
+def _passes_short_scalp_reversal_filter(candle: Candle, settings: Settings) -> bool:
+    """Reject SHORT scalps that already bounced hard within the signal candle.
+
+    This uses only the already-closed 1m candle.  A long lower wick or a close far
+    above the low means sellers pushed down but buyers absorbed/reversed it; that
+    is the exact whipsaw shape seen in the recent live SHORT losses.
+    """
+    body = abs(candle.close - candle.open)
+    lower_wick = min(candle.open, candle.close) - candle.low
+    if settings.short_max_lower_wick_body_ratio > 0:
+        if body <= 0 or lower_wick / body > settings.short_max_lower_wick_body_ratio:
+            return False
+    if settings.short_max_close_from_low_pct > 0 and candle.low > 0:
+        close_from_low_pct = (candle.close / candle.low - 1) * 100
+        if close_from_low_pct > settings.short_max_close_from_low_pct:
+            return False
+    return True
+
+
+def _passes_long_scalp_reversal_filter(candle: Candle, settings: Settings) -> bool:
+    """Reject LONG scalps that already rejected hard within the signal candle.
+
+    This uses only the already-closed 1m candle.  A long upper wick or a close far
+    below the high means buyers pushed up but sellers absorbed/reversed it; that
+    is the LONG-side analogue of the recent SHORT lower-wick whipsaw filter.
+    """
+    body = abs(candle.close - candle.open)
+    upper_wick = candle.high - max(candle.open, candle.close)
+    if settings.long_max_upper_wick_body_ratio > 0:
+        if body <= 0 or upper_wick / body > settings.long_max_upper_wick_body_ratio:
+            return False
+    if settings.long_max_close_from_high_pct > 0 and candle.high > 0:
+        close_from_high_pct = (candle.high / candle.close - 1) * 100
+        if close_from_high_pct > settings.long_max_close_from_high_pct:
+            return False
+    return True
+
+
 def signal(history: list[Candle], settings: Settings) -> str | None:
     """Uses only the passed, already-closed candles; never an unobserved candle."""
     if len(history) < settings.warmup:
@@ -162,7 +245,14 @@ def signal(history: list[Candle], settings: Settings) -> str | None:
                 and current.volume >= volume_ma * settings.short_volume_ratio and taker <= settings.short_taker_buy_ratio_max
                 and fast < slow and macd <= macd_signal and rsi <= settings.short_rsi_max
                 and adx >= settings.short_adx_threshold)
-    return "LONG" if long_ok else "SHORT" if short_ok else None
+    if short_ok and not _passes_short_scalp_reversal_filter(current, settings):
+        short_ok = False
+    if long_ok and not _passes_long_scalp_reversal_filter(current, settings):
+        long_ok = False
+    side = "LONG" if long_ok else "SHORT" if short_ok else None
+    if side and not _passes_whipsaw_filter(window, side, settings):
+        return None
+    return side
 
 
 def load_data(path: Path) -> tuple[dict[str, list[Candle]], dict[str, Any]]:
@@ -198,6 +288,20 @@ def load_data(path: Path) -> tuple[dict[str, list[Candle]], dict[str, Any]]:
 def _fill(price: float, side: str, entering: bool, bps: float) -> float:
     adverse_buy = (side == "LONG") == entering
     return price * (1 + (bps / 10000 if adverse_buy else -bps / 10000))
+
+
+def _entry_limit_price(open_price: float, side: str, settings: Settings) -> float:
+    if settings.limit_entry_pullback_bps <= 0:
+        return open_price
+    if side == "LONG":
+        return open_price * (1 - settings.limit_entry_pullback_bps / 10000)
+    return open_price * (1 + settings.limit_entry_pullback_bps / 10000)
+
+
+def _entry_limit_filled(candle: Candle, side: str, limit_price: float) -> bool:
+    if side == "LONG":
+        return candle.low <= limit_price
+    return candle.high >= limit_price
 
 
 def exit_decision(pos: Position, candle: Candle, settings: Settings) -> tuple[float, str] | None:
@@ -255,7 +359,8 @@ def _close(pos: Position, price: float, timestamp: int, reason: str, settings: S
     ledger = {"symbol": pos.symbol, "side": pos.side, "entry_time": pos.entry_time, "exit_time": timestamp,
               "entry_price": pos.entry_price, "exit_price": fill, "quantity": pos.quantity, "reason": reason,
               "gross_pnl": pre_cost_gross, "fee": total_fee, "slippage": slippage, "funding": pos.funding,
-              "net_pnl": pre_cost_gross - total_fee - slippage - pos.funding, "holding_minutes": (timestamp - pos.entry_time) / 60000}
+              "net_pnl": pre_cost_gross - total_fee - slippage - pos.funding, "holding_minutes": (timestamp - pos.entry_time) / 60000,
+              "max_adverse_roe": pos.max_adverse_roe, "max_favorable_roe": pos.max_favorable_roe}
     return ledger, balance + pos.margin + net
 
 
@@ -265,12 +370,15 @@ def run_backtest(data: dict[str, list[Candle]], settings: Settings) -> dict[str,
         for candle in candles: by_time[candle.timestamp][symbol] = candle
     histories = defaultdict(list); positions: dict[str, Position] = {}; pending: dict[str, str] = {}
     balance, ledger, curve = settings.starting_balance, [], []
+    unfilled_entries = 0
     for timestamp in sorted(by_time):
         candles = by_time[timestamp]
         for symbol in sorted(candles):
             candle = candles[symbol]
             pos = positions.get(symbol)
             if pos:
+                pos.max_adverse_roe = min(pos.max_adverse_roe, _adverse_roe(pos, candle, settings))
+                pos.max_favorable_roe = max(pos.max_favorable_roe, _favorable_roe(pos, candle, settings))
                 # Conservative: if stop and target are both reachable, stop wins.
                 decision = exit_decision(pos, candle, settings)
                 if decision:
@@ -287,12 +395,22 @@ def run_backtest(data: dict[str, list[Candle]], settings: Settings) -> dict[str,
                     if symbol in positions:
                         positions[symbol].funding += positions[symbol].entry_price * positions[symbol].quantity * settings.funding_rate_8h / 480
             if symbol in pending and symbol not in positions and len(positions) < settings.max_positions:
-                side = pending.pop(symbol); entry = _fill(candle.open, side, True, settings.slippage_bps)
-                margin = balance * settings.margin_fraction
+                side = pending.pop(symbol)
+                limit_price = _entry_limit_price(candle.open, side, settings)
+                if not _entry_limit_filled(candle, side, limit_price):
+                    unfilled_entries += 1
+                    histories[symbol].append(candle)
+                    continue
+                entry = _fill(limit_price, side, True, settings.slippage_bps)
+                side_margin_mult = settings.long_margin_fraction_mult if side == "LONG" else settings.short_margin_fraction_mult
+                margin = balance * settings.margin_fraction * side_margin_mult
                 if margin > 0:
                     qty = margin * settings.leverage / entry; fee = entry * qty * settings.fee_rate
                     balance -= margin + fee
-                    positions[symbol] = Position(symbol, side, timestamp, entry, qty, margin, fee, entry)
+                    pos = Position(symbol, side, timestamp, entry, qty, margin, fee, entry)
+                    pos.max_adverse_roe = min(pos.max_adverse_roe, _adverse_roe(pos, candle, settings))
+                    pos.max_favorable_roe = max(pos.max_favorable_roe, _favorable_roe(pos, candle, settings))
+                    positions[symbol] = pos
             histories[symbol].append(candle)
             if symbol not in positions and symbol not in pending and len(positions) + len(pending) < settings.max_positions:
                 side = signal(histories[symbol], settings)
@@ -301,7 +419,7 @@ def run_backtest(data: dict[str, list[Candle]], settings: Settings) -> dict[str,
         curve.append({"timestamp": timestamp, "equity": equity})
     for symbol, pos in list(positions.items()):
         item, balance = _close(pos, histories[symbol][-1].close, histories[symbol][-1].timestamp, "end_of_data", settings, balance); ledger.append(item)
-    return {"ledger": ledger, "final_balance": balance, "equity_curve": curve}
+    return {"ledger": ledger, "final_balance": balance, "equity_curve": curve, "unfilled_entries": unfilled_entries}
 
 
 def metrics(result: dict[str, Any], validation_start: int) -> dict[str, Any]:
@@ -309,12 +427,17 @@ def metrics(result: dict[str, Any], validation_start: int) -> dict[str, Any]:
     def summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         wins = [r for r in rows if r["net_pnl"] > 0]; losses = [r for r in rows if r["net_pnl"] <= 0]
         gross_profit, gross_loss = sum(r["net_pnl"] for r in wins), abs(sum(r["net_pnl"] for r in losses))
+        early_losses = [r for r in losses if r["holding_minutes"] <= 3]
+        adverse_losses = [r for r in losses if r.get("max_adverse_roe", 0.0) <= -3.0]
         streak = current = 0
         for r in rows:
             current = current + 1 if r["net_pnl"] <= 0 else 0; streak = max(streak, current)
         return {"trades": len(rows), "wins": len(wins), "losses": len(losses), "win_rate": len(wins) / len(rows) if rows else 0,
                 "gross_pnl": sum(r["gross_pnl"] for r in rows), "fee": sum(r["fee"] for r in rows), "slippage": sum(r["slippage"] for r in rows), "funding": sum(r["funding"] for r in rows), "net_pnl": sum(r["net_pnl"] for r in rows),
                 "average_win": sum(r["net_pnl"] for r in wins) / len(wins) if wins else 0, "average_loss": sum(r["net_pnl"] for r in losses) / len(losses) if losses else 0,
+                "average_max_adverse_roe": sum(r.get("max_adverse_roe", 0.0) for r in rows) / len(rows) if rows else 0,
+                "early_loss_rate": len(early_losses) / len(rows) if rows else 0,
+                "adverse_loss_rate": len(adverse_losses) / len(rows) if rows else 0,
                 "profit_factor": gross_profit / gross_loss if gross_loss else None, "expectancy": sum(r["net_pnl"] for r in rows) / len(rows) if rows else 0,
                 "max_consecutive_losses": streak, "average_holding_minutes": sum(r["holding_minutes"] for r in rows) / len(rows) if rows else 0}
     peak, max_dd = -math.inf, 0.0
@@ -325,7 +448,7 @@ def metrics(result: dict[str, Any], validation_start: int) -> dict[str, Any]:
         bucket = defaultdict(list)
         for row in ledger: bucket[selector(row)].append(row)
         groups[key] = {name: summary(rows) for name, rows in bucket.items()}
-    return {"all": summary(ledger), "exploration_first_3_days": summary([r for r in ledger if r["entry_time"] < validation_start]), "validation_last_2_days": summary([r for r in ledger if r["entry_time"] >= validation_start]), "max_drawdown_usdt": max_dd, "max_drawdown_pct_of_start": max_dd / result["equity_curve"][0]["equity"] if result["equity_curve"] else 0.0, **groups}
+    return {"all": summary(ledger), "exploration_first_3_days": summary([r for r in ledger if r["entry_time"] < validation_start]), "validation_last_2_days": summary([r for r in ledger if r["entry_time"] >= validation_start]), "max_drawdown_usdt": max_dd, "max_drawdown_pct_of_start": max_dd / result["equity_curve"][0]["equity"] if result["equity_curve"] else 0.0, "unfilled_entries": result.get("unfilled_entries", 0), **groups}
 
 
 def write_reports(output: Path, payload: dict[str, Any]) -> tuple[Path, Path, Path]:
@@ -347,22 +470,42 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Offline-only local kline backtest")
     parser.add_argument("--data", required=True); parser.add_argument("--output", default="backtest_results")
     parser.add_argument("--fee-rate", type=float, default=0.0004); parser.add_argument("--slippage-bps", type=float, default=5.0)
+    parser.add_argument("--long-margin-fraction-mult", type=float, default=1.0)
+    parser.add_argument("--short-margin-fraction-mult", type=float, default=1.0)
+    parser.add_argument("--min-atr-vs-stop-ratio", type=float, default=0.8)
+    parser.add_argument("--max-atr-vs-stop-ratio", type=float, default=4.0)
+    parser.add_argument("--short-stop-roe-pct", type=float, default=5.0)
     parser.add_argument("--funding-rate-8h", type=float, default=0.0); parser.add_argument("--average-down", action="store_true")
     parser.add_argument("--trade-sides", choices=("both", "long-only", "short-only"), default="both")
     parser.add_argument("--short-volume-ratio", type=float, default=2.6)
+    parser.add_argument("--limit-entry-pullback-bps", type=float, default=0.0)
     parser.add_argument("--short-candle-change-pct", type=float, default=0.45)
     parser.add_argument("--short-taker-buy-ratio-max", type=float, default=0.43)
     parser.add_argument("--short-adx-threshold", type=float, default=24.0)
     parser.add_argument("--short-rsi-max", type=float, default=45.0)
+    parser.add_argument("--short-max-lower-wick-body-ratio", type=float, default=0.0)
+    parser.add_argument("--short-max-close-from-low-pct", type=float, default=0.0)
+    parser.add_argument("--long-max-upper-wick-body-ratio", type=float, default=0.0)
+    parser.add_argument("--long-max-close-from-high-pct", type=float, default=0.0)
     args = parser.parse_args(); disable_network()
     # Windows legacy consoles otherwise cannot render the mandated em dash.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     print("OFFLINE MODE — no API/network access")
     settings = Settings(fee_rate=args.fee_rate, slippage_bps=args.slippage_bps, funding_rate_8h=args.funding_rate_8h,
+                        long_margin_fraction_mult=args.long_margin_fraction_mult,
+                        short_margin_fraction_mult=args.short_margin_fraction_mult,
+                        min_atr_vs_stop_ratio=args.min_atr_vs_stop_ratio,
+                        max_atr_vs_stop_ratio=args.max_atr_vs_stop_ratio,
+                        short_stop_roe_pct=args.short_stop_roe_pct,
                         trade_sides=args.trade_sides, short_volume_ratio=args.short_volume_ratio,
+                        limit_entry_pullback_bps=args.limit_entry_pullback_bps,
                         short_candle_change_pct=args.short_candle_change_pct,
                         short_taker_buy_ratio_max=args.short_taker_buy_ratio_max,
+                        short_max_lower_wick_body_ratio=args.short_max_lower_wick_body_ratio,
+                        short_max_close_from_low_pct=args.short_max_close_from_low_pct,
+                        long_max_upper_wick_body_ratio=args.long_max_upper_wick_body_ratio,
+                        long_max_close_from_high_pct=args.long_max_close_from_high_pct,
                         short_adx_threshold=args.short_adx_threshold, short_rsi_max=args.short_rsi_max,
                         average_down=args.average_down)
     data, quality = load_data(Path(args.data)); result = run_backtest(data, settings)

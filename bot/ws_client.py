@@ -22,6 +22,7 @@ ChatGPT 스펙에서 요청한 "REST 30초 폴링 대신 WebSocket으로 신호 
 from __future__ import annotations
 
 import logging
+import json
 import threading
 import time
 from collections import deque
@@ -499,9 +500,40 @@ class FillTracker:
     직후 이 값을 조회해 actual_fill_* 필드에 채워 넣는 용도로 설계했다(아직 main.py에
     연결 안 함, 다음 단계)."""
 
-    def __init__(self):
+    def __init__(self, log_events: bool = False, event_log_dir: Optional[Path] = None):
         self._lock = threading.Lock()
         self._last_fill: dict[str, OrderFill] = {}
+        self.log_events = log_events
+        self.event_log_dir = Path(event_log_dir) if event_log_dir is not None else Path(__file__).resolve().parent.parent / "logs"
+
+    def _append_event_log(self, fill: OrderFill, msg: dict) -> None:
+        if not self.log_events:
+            return
+        try:
+            self.event_log_dir.mkdir(exist_ok=True)
+            event_day = time.strftime("%Y%m%d", time.localtime(fill.event_time_ms / 1000 if fill.event_time_ms else time.time()))
+            path = self.event_log_dir / f"fill_events_{event_day}.jsonl"
+            order = msg.get("o", {}) if isinstance(msg, dict) else {}
+            row = {
+                "logged_at": time.time(),
+                "event_time_ms": fill.event_time_ms,
+                "symbol": fill.symbol,
+                "side": fill.side,
+                "avg_price": fill.avg_price,
+                "quantity": float(order.get("q", 0.0) or 0.0),
+                "last_filled_quantity": float(order.get("l", 0.0) or 0.0),
+                "commission": fill.commission,
+                "commission_asset": fill.commission_asset,
+                "realized_pnl": fill.realized_pnl,
+                "order_status": fill.order_status,
+                "order_id": order.get("i"),
+                "client_order_id": order.get("c"),
+                "execution_type": order.get("x"),
+            }
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except Exception:
+            log.exception("체결 이벤트 로그 기록 실패(무시하고 계속 진행)")
 
     def on_message(self, msg: dict) -> None:
         fill = parse_order_trade_update(msg)
@@ -509,6 +541,7 @@ class FillTracker:
             return
         with self._lock:
             self._last_fill[fill.symbol] = fill
+        self._append_event_log(fill, msg)
 
     def get(self, symbol: str) -> Optional[OrderFill]:
         with self._lock:

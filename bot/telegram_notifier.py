@@ -111,7 +111,9 @@ class TelegramNotifier:
 
     def notify_startup(self, mode: str, symbol_count: int):
         self.send(f"🤖 봇 시작 — {mode}\n대상 심볼 수: {symbol_count}")
-        self.send_menu()
+        # [2026-08-11 사용자요청] "메뉴 고정 멘트는 이제 없어도 돼" — 오늘 재시작이 잦아서
+        # 매번 이 안내가 반복되는 게 불필요해짐. 메뉴 자체(/menu, 하단 버튼)는 그대로 쓸 수
+        # 있고, 여기서 재기동 시 자동 발송만 멈춘다.
 
     def notify_error(self, symbol: str, message: str):
         self.send(f"⚠️ {symbol} 오류\n{message}")

@@ -57,6 +57,8 @@ def load_env_file(path: Path) -> dict[str, str]:
 def prepare_isolated_tree() -> None:
     if RUN_BOT.exists():
         shutil.rmtree(RUN_BOT)
+    if RUN_LOGS.exists():
+        shutil.rmtree(RUN_LOGS)
     RUN_ROOT.mkdir(exist_ok=True)
     RUN_LOGS.mkdir(exist_ok=True)
     shutil.copytree(SRC_BOT, RUN_BOT)

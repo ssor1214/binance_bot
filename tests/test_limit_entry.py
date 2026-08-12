@@ -15,6 +15,7 @@ def cfg(**overrides):
     c = Config()
     c.limit_entry_enabled = True
     c.limit_entry_wait_sec = 2.0
+    c.limit_entry_pullback_pct = 0.0
     for k, v in overrides.items():
         setattr(c, k, v)
     return c
@@ -54,6 +55,28 @@ class PlaceEntryOrderLimitTests(unittest.TestCase):
         place_entry_order(ex, c, "BTCUSDT", "SHORT", 1.0)
 
         ex.open_limit_position.assert_called_once_with("BTCUSDT", "SHORT", 1.0, 100.5)
+
+    def test_pullback_offsets_limit_price_without_chasing(self):
+        c = cfg(limit_entry_pullback_pct=0.03)
+        ex = MagicMock()
+        ex.get_book_ticker.return_value = {"bid": 100.0, "ask": 101.0}
+        ex.open_limit_position.return_value = {"orderId": 1}
+        ex.get_order_status.return_value = {"status": "FILLED"}
+
+        place_entry_order(ex, c, "BTCUSDT", "LONG", 1.0)
+        args = ex.open_limit_position.call_args.args
+        self.assertEqual(args[:3], ("BTCUSDT", "LONG", 1.0))
+        self.assertAlmostEqual(args[3], 99.97)
+
+        ex.reset_mock()
+        ex.get_book_ticker.return_value = {"bid": 100.0, "ask": 101.0}
+        ex.open_limit_position.return_value = {"orderId": 2}
+        ex.get_order_status.return_value = {"status": "FILLED"}
+
+        place_entry_order(ex, c, "BTCUSDT", "SHORT", 1.0)
+        args = ex.open_limit_position.call_args.args
+        self.assertEqual(args[:3], ("BTCUSDT", "SHORT", 1.0))
+        self.assertAlmostEqual(args[3], 101.0303)
 
     def test_polls_until_filled_within_wait_window(self):
         c = cfg()

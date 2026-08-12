@@ -2,6 +2,8 @@
 않는다 — start()를 호출하지 않는 한 네트워크 연결이 발생하지 않는 구조라, 메시지
 파싱/캐시 로직만 오프라인으로 검증한다."""
 import sys
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -247,6 +249,7 @@ def order_trade_update_msg(symbol="TESTUSDT", exec_type="TRADE", status="FILLED"
         "o": {
             "s": symbol, "S": side, "x": exec_type, "X": status,
             "ap": avg_price, "n": commission, "N": "USDT", "rp": realized_pnl,
+            "q": "12.0", "l": "12.0", "i": 12345, "c": "client-1",
         },
     }
 
@@ -311,6 +314,21 @@ class FillTrackerTests(unittest.TestCase):
             tracker.on_message({"garbage": True})
         except Exception as e:
             self.fail(f"on_message이 예외를 던지면 안 됨: {e}")
+
+    def test_optional_jsonl_event_log_records_normalized_fill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tracker = FillTracker(log_events=True, event_log_dir=Path(tmp))
+            tracker.on_message(order_trade_update_msg("AUSDT", side="SELL", avg_price="10.5"))
+            files = list(Path(tmp).glob("fill_events_*.jsonl"))
+            self.assertEqual(len(files), 1)
+            rows = files[0].read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(rows), 1)
+            row = json.loads(rows[0])
+            self.assertEqual(row["symbol"], "AUSDT")
+            self.assertEqual(row["side"], "SELL")
+            self.assertEqual(row["avg_price"], 10.5)
+            self.assertEqual(row["quantity"], 12.0)
+            self.assertEqual(row["order_id"], 12345)
 
 
 def rest_shaped_df(n=5, start_price=100.0):

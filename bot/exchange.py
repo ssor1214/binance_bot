@@ -2,6 +2,7 @@ import logging
 import math
 import re
 import time
+from decimal import Decimal, ROUND_DOWN
 import pandas as pd
 from binance import Client
 from binance.exceptions import BinanceAPIException
@@ -139,6 +140,25 @@ class Exchange:
     def get_mark_price(self, symbol: str) -> float:
         return float(self.client.futures_mark_price(symbol=symbol)["markPrice"])
 
+    def get_last_price_fast(self, symbol: str) -> float:
+        """[2026-08-11 사용자요청] 진입 직전 "신호 이후 가격 재검증"처럼, 정확한 마크가격이
+        아니라 "지금 대략 어디 있는지"만 빨리 알면 되는 곳에서 쓴다. WS 캔들 캐시가 있고
+        신선하면 REST 왕복 없이 그 마지막 종가를 즉시 반환한다(그 왕복 시간 동안 가격이
+        더 움직여서 재검증에 계속 걸리는 문제를 줄임). 캐시가 없거나 오래됐으면 기존처럼
+        get_mark_price()로 안전하게 폴백한다. 실제 손익/트리거 계산에는 쓰지 않는다 —
+        그런 곳은 반드시 get_mark_price()(정식 마크가격)를 그대로 써야 한다."""
+        if (
+            self._ws_kline_cache is not None
+            and self._ws_kline_cache.is_fresh(symbol, self.cfg.ws_kline_max_staleness_sec)
+        ):
+            try:
+                df = self._ws_kline_cache.to_dataframe(symbol)
+                if df is not None and len(df):
+                    return float(df["close"].iloc[-1])
+            except Exception:
+                pass  # 캐시 읽기 실패해도 조용히 REST로 폴백
+        return self.get_mark_price(symbol)
+
     def get_book_ticker(self, symbol: str) -> dict:
         ticker = self.client.futures_orderbook_ticker(symbol=symbol)
         return {
@@ -263,6 +283,7 @@ class Exchange:
                 result = {
                     "quantity_precision": s["quantityPrecision"],
                     "price_precision": s["pricePrecision"],
+                    "tick_size": float(filters.get("PRICE_FILTER", {}).get("tickSize", 0)),
                     "min_qty": float(filters.get("LOT_SIZE", {}).get("minQty", 0)),
                     "step_size": float(filters.get("LOT_SIZE", {}).get("stepSize", 0)),
                     "min_notional": float(filters.get("MIN_NOTIONAL", {}).get("notional", 0)),
@@ -440,7 +461,12 @@ class Exchange:
 
     def round_price(self, symbol: str, price: float) -> float:
         f = self.get_symbol_filters(symbol)
-        return round(price, f["price_precision"])
+        precision = f["price_precision"]
+        tick = f.get("tick_size", 0)
+        if not tick:
+            return round(price, precision)
+        rounded = (Decimal(str(price)) / Decimal(str(tick))).to_integral_value(rounding=ROUND_DOWN) * Decimal(str(tick))
+        return round(float(rounded), precision)
 
     def place_stop_market(self, symbol: str, side: str, quantity: float, stop_price: float):
         """[2026-08-06] 진입 직후 거래소에 손절 주문을 걸어둔다 — 30초 폴링 사이 급락(실측:

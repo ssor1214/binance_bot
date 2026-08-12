@@ -75,6 +75,35 @@ class OfflineBacktestTests(unittest.TestCase):
         self.assertGreater(ob._fill(100, "LONG", True, 10), 100)
         self.assertLess(ob._fill(100, "LONG", False, 10), 100)
 
+    def test_limit_entry_pullback_must_touch_price(self):
+        settings = ob.Settings(limit_entry_pullback_bps=10)
+        self.assertAlmostEqual(ob._entry_limit_price(100, "LONG", settings), 99.9)
+        self.assertAlmostEqual(ob._entry_limit_price(100, "SHORT", settings), 100.1)
+        self.assertTrue(ob._entry_limit_filled(candle(0, 100, 101, 99.8, 100), "LONG", 99.9))
+        self.assertFalse(ob._entry_limit_filled(candle(0, 100, 101, 99.95, 100), "LONG", 99.9))
+        self.assertTrue(ob._entry_limit_filled(candle(0, 100, 100.2, 99, 100), "SHORT", 100.1))
+        self.assertFalse(ob._entry_limit_filled(candle(0, 100, 100.05, 99, 100), "SHORT", 100.1))
+
+    def test_short_scalp_reversal_filter_rejects_long_lower_wick(self):
+        settings = ob.Settings(short_max_lower_wick_body_ratio=1.0)
+        self.assertFalse(ob._passes_short_scalp_reversal_filter(candle(0, 100, 101, 95, 99), settings))
+        self.assertTrue(ob._passes_short_scalp_reversal_filter(candle(0, 100, 101, 98.8, 99), settings))
+
+    def test_short_scalp_reversal_filter_rejects_close_far_from_low(self):
+        settings = ob.Settings(short_max_close_from_low_pct=2.0)
+        self.assertFalse(ob._passes_short_scalp_reversal_filter(candle(0, 100, 101, 95, 98), settings))
+        self.assertTrue(ob._passes_short_scalp_reversal_filter(candle(0, 100, 101, 98, 99), settings))
+
+    def test_close_records_mae_mfe(self):
+        settings = ob.Settings(leverage=4)
+        pos = ob.Position("X", "LONG", 0, 100, 1, 10, 0, 100)
+        c = candle(60000, 100, 101, 99, 100)
+        pos.max_adverse_roe = min(pos.max_adverse_roe, ob._adverse_roe(pos, c, settings))
+        pos.max_favorable_roe = max(pos.max_favorable_roe, ob._favorable_roe(pos, c, settings))
+        row, _ = ob._close(pos, 100, 60000, "test", settings, 0)
+        self.assertAlmostEqual(row["max_adverse_roe"], -4.0)
+        self.assertAlmostEqual(row["max_favorable_roe"], 4.0)
+
     def test_cost_accounting_identity(self):
         settings = ob.Settings(fee_rate=0.001, slippage_bps=10)
         pos = ob.Position("X", "LONG", 0, 100.1, 1, 25, 0.1001, 100.1)

@@ -25,6 +25,7 @@ def make_cfg(**overrides):
     cfg.ws_market_data_enabled = False
     cfg.ws_user_data_enabled = False
     cfg.ws_kline_max_staleness_sec = 150.0
+    cfg.ws_canary_max_staleness_sec = 150.0
     cfg.ws_market_shard_count = 1
     for k, v in overrides.items():
         setattr(cfg, k, v)
@@ -196,7 +197,7 @@ class WsLayerNeedsRestartTests(unittest.TestCase):
             self.assertEqual(ws_layer_needs_restart(cfg, handles, "BTCUSDT"), [])
 
     def test_checks_cache_freshness_after_grace_period_expires(self):
-        cfg = make_cfg(ws_market_data_enabled=True, ws_kline_max_staleness_sec=150.0)
+        cfg = make_cfg(ws_market_data_enabled=True, ws_canary_max_staleness_sec=150.0)
         fake_process = MagicMock()
         fake_process.poll.return_value = None
         with patch("bot.main.time.time", return_value=1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 1), \
@@ -205,6 +206,34 @@ class WsLayerNeedsRestartTests(unittest.TestCase):
             fake_cache_cls.return_value.health.return_value = None
             handles = {"workers": [make_worker(process=fake_process, started_at=1000.0, symbols=["BTCUSDT"])]}
             self.assertEqual(ws_layer_needs_restart(cfg, handles, "BTCUSDT"), [0])
+
+    def test_canary_watchdog_uses_separate_staleness_from_trading_cache(self):
+        """Trading cache freshness may be tight (e.g. 20s for REST fallback), but watchdog
+        canary freshness must stay loose enough for closed 1m candles."""
+        cfg = make_cfg(
+            ws_market_data_enabled=True,
+            ws_kline_max_staleness_sec=20.0,
+            ws_canary_max_staleness_sec=120.0,
+            ws_message_max_staleness_sec=45.0,
+        )
+        fake_process = MagicMock()
+        fake_process.poll.return_value = None
+        now = 1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 100
+        with patch("bot.main.time.time", return_value=now), \
+             patch("bot.main.FileBackedKlineCache") as fake_cache_cls:
+            fake_cache_cls.return_value.health.return_value = {
+                "last_market_message_ts": now - 1,
+                "error_count_60s": 0,
+                "consecutive_read_loop_errors": 0,
+            }
+
+            def is_fresh(_symbol, max_age_sec):
+                return max_age_sec == 120.0
+
+            fake_cache_cls.return_value.is_fresh.side_effect = is_fresh
+            handles = {"workers": [make_worker(process=fake_process, started_at=1000.0, symbols=["BTCUSDT"])]}
+            self.assertEqual(ws_layer_needs_restart(cfg, handles, "BTCUSDT"), [])
+            fake_cache_cls.return_value.is_fresh.assert_called_with("BTCUSDT", 120.0)
 
     def test_only_broken_shard_flagged_when_other_shard_is_healthy(self):
         """[핵심, 샤딩] 샤드 2개 중 하나만 문제가 있으면 그 인덱스만 반환해야 한다 —
@@ -308,6 +337,40 @@ class WsLayerNeedsRestartHealthBasedTests(unittest.TestCase):
                 "consecutive_read_loop_errors": 0,
             }
             self.assertEqual(ws_layer_needs_restart(cfg, self._handles_past_grace(), "BTCUSDT"), [])
+
+
+class StartWsLayerSymbolSnapshotTests(unittest.TestCase):
+    def test_market_workers_receive_parent_symbol_snapshot(self):
+        cfg = make_cfg(ws_market_data_enabled=True, ws_market_shard_count=2)
+        ex = FakeExchange()
+        symbols = ["S0", "S1", "S2", "S3"]
+        with patch("subprocess.Popen", return_value=MagicMock()) as fake_popen:
+            start_ws_layer(ex, cfg, symbols)
+
+        self.assertEqual(fake_popen.call_count, 2)
+        for call in fake_popen.call_args_list:
+            env_symbols = __import__("json").loads(call.kwargs["env"]["WS_WORKER_SYMBOLS"])
+            self.assertEqual(env_symbols, symbols)
+
+
+class WsLayerRestartReasonTests(unittest.TestCase):
+    def test_records_message_stale_reason(self):
+        cfg = make_cfg(ws_market_data_enabled=True, ws_message_max_staleness_sec=45.0)
+        fake_process = MagicMock()
+        fake_process.poll.return_value = None
+        now = 1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 100
+        handles = {"workers": [make_worker(process=fake_process, started_at=1000.0, symbols=["BTCUSDT"])]}
+        with patch("bot.main.time.time", return_value=now), \
+             patch("bot.main.FileBackedKlineCache") as fake_cache_cls:
+            fake_cache_cls.return_value.is_fresh.return_value = True
+            fake_cache_cls.return_value.health.return_value = {
+                "last_market_message_ts": now - 60,
+                "error_count_60s": 0,
+                "consecutive_read_loop_errors": 0,
+            }
+
+            self.assertEqual(ws_layer_needs_restart(cfg, handles, "BTCUSDT"), [0])
+            self.assertIn("message_stale", handles["last_restart_reasons"][0])
 
 
 if __name__ == "__main__":

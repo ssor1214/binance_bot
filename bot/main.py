@@ -205,6 +205,139 @@ def analyze_hourly_performance(ex: Exchange, cfg: Config, signal_symbol_count: i
     return diagnosis, {}
 
 
+BTC_TREND_TIMEFRAMES = ("1h", "4h", "12h", "1d", "3d")
+
+
+def analyze_btc_multi_timeframe_trend(ex: Exchange, cfg: Config) -> dict:
+    """[2026-08-11 사용자요청] "오늘 비트가 많이 떨어져서 알트가 급락했다" — BTC 흐름을
+    1h/4h/12h/1d/3d로 나눠서 보고, 텔레그램으로 30분마다 요약해서 알려준다(자동 조치는
+    하지 않음, 참고용 정보 제공만). 각 시간대별로 EMA(fast/slow) 정배열/역배열로 추세를,
+    조회한 캔들 구간의 시가 대비 종가 변화율로 강도를 함께 본다."""
+    results = {}
+    for interval in BTC_TREND_TIMEFRAMES:
+        try:
+            df = ex.get_klines("BTCUSDT", limit=60, interval=interval)
+            df = add_indicators(df, cfg)
+        except Exception:
+            results[interval] = None
+            continue
+        curr = df.iloc[-1]
+        first_close = df["close"].iloc[0]
+        change_pct = ((curr["close"] / first_close) - 1) * 100 if first_close else 0.0
+        trend = "상승" if curr["ema_fast"] > curr["ema_slow"] else "하락"
+        results[interval] = {"trend": trend, "change_pct": change_pct, "close": curr["close"]}
+    return results
+
+
+def analyze_recent_trade_review(ex: Exchange, cfg: Config, window_sec: float, ledger_path: str = "logs/trade_ledger.jsonl") -> tuple[str, dict]:
+    """[2026-08-11 사용자요청] "30분마다 수익/손실을 복기하고 분석 결과를 텔레그램으로" —
+    직전 window_sec(기본 1800초) 동안의 봇 거래를 다시 불러와 승률/손익을 요약하고,
+    손실거래 중 최근 최대 5건은 실제 차트(청산 후 15분)를 다시 조회해 "조금만 더 버텼으면
+    회복됐을 손실(휩쏘성 조기청산)"인지 확인한다(API 부담 제한을 위해 표본 제한). 뚜렷한
+    패턴이 확인되면 구체적 파라미터 조정안을 changes로 반환한다 — 실제 적용은 여기서
+    하지 않고, 호출부가 tg.propose_tuning()으로 승인 버튼과 함께 보내서 사용자가 승인
+    누르거나 직접 요청할 때만 이뤄진다(자동 적용 없음)."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    ledger_path = _Path(ledger_path)
+    now = time.time()
+    start = now - window_sec
+    rows = []
+    try:
+        with open(ledger_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = _json.loads(line)
+                except Exception:
+                    continue
+                if r.get("origin", "bot") != "bot":
+                    continue
+                if r["entered_at"] >= start:
+                    rows.append(r)
+    except Exception:
+        return "복기용 거래 기록을 불러오지 못했어요.", {}
+
+    if not rows:
+        return f"🔍 최근 {window_sec/60:.0f}분 복기 — 거래 없음", {}
+
+    def pnl(r):
+        return r.get("estimated_pnl_usdt", 0) or 0
+
+    wins = [r for r in rows if pnl(r) > 0]
+    losses = [r for r in rows if pnl(r) <= 0]
+    net = sum(pnl(r) for r in rows)
+    win_rate = len(wins) / len(rows) * 100
+    long_rows = [r for r in rows if r.get("side") == "LONG"]
+    short_rows = [r for r in rows if r.get("side") == "SHORT"]
+
+    lines = [
+        f"🔍 최근 {window_sec/60:.0f}분 복기 — {len(rows)}건, 승률{win_rate:.0f}%, 순손익{net:+.2f}USDT",
+        f"LONG {len(long_rows)}건 / SHORT {len(short_rows)}건",
+    ]
+
+    sample_losses = sorted(losses, key=lambda r: r["entered_at"])[-5:]
+    recovered, checked = 0, 0
+    for trade in sample_losses:
+        try:
+            symbol, side = trade["symbol"], trade["side"]
+            entry_price, exited_at = trade["entry_price"], trade["exited_at"]
+            raw = ex.client.futures_klines(
+                symbol=symbol, interval="1m",
+                startTime=int(exited_at * 1000), endTime=int((exited_at + 900) * 1000), limit=20,
+            )
+            if not raw:
+                continue
+            checked += 1
+            if side == "LONG":
+                if max(float(k[2]) for k in raw) > entry_price:
+                    recovered += 1
+            else:
+                if min(float(k[3]) for k in raw) < entry_price:
+                    recovered += 1
+        except Exception:
+            continue
+
+    changes = {}
+    if losses:
+        avg_loss = sum(pnl(r) for r in losses) / len(losses)
+        lines.append(f"손실 {len(losses)}건 평균 {avg_loss:+.3f}USDT")
+    if checked >= 3 and recovered / checked >= 0.6:
+        lines.append(f"⚠️ 손실 {checked}건 중 {recovered}건이 청산 후 15분 내 가격 회복 — 휩쏘성 조기청산 의심")
+        lines.append("제안: 진입직후 손절 유예 확장배수를 한 단계 더 넓히기")
+        changes["STOP_LOSS_GRACE_WIDEN_MULT"] = round(min(3.0, cfg.stop_loss_grace_widen_mult + 0.25), 2)
+
+    diagnosis = "\n".join(lines)
+    return diagnosis, changes
+
+
+def format_btc_trend_digest(results: dict) -> str:
+    """analyze_btc_multi_timeframe_trend()의 결과를 텔레그램 메시지로 포맷한다."""
+    lines = ["📉 BTC 멀티타임프레임 흐름 (30분 주기)"]
+    down_count, up_count = 0, 0
+    for interval in BTC_TREND_TIMEFRAMES:
+        r = results.get(interval)
+        if r is None:
+            lines.append(f"- {interval}: 조회 실패")
+            continue
+        emoji = "🔴" if r["trend"] == "하락" else "🟢"
+        lines.append(f"- {interval}: {emoji} {r['trend']} ({r['change_pct']:+.2f}%)")
+        if r["trend"] == "하락":
+            down_count += 1
+        else:
+            up_count += 1
+    if down_count >= 4:
+        lines.append("→ 대부분 시간대가 하락 추세 — SHORT쪽이 유리한 환경일 수 있어요(참고용, 자동 조치 없음).")
+    elif up_count >= 4:
+        lines.append("→ 대부분 시간대가 상승 추세 — LONG쪽이 유리한 환경일 수 있어요(참고용, 자동 조치 없음).")
+    else:
+        lines.append("→ 시간대별로 방향이 엇갈려요 — 뚜렷한 한쪽 편향은 아닌 것 같아요.")
+    return "\n".join(lines)
+
+
 def sync_existing_positions(ex: Exchange, pm: PositionManager):
     """봇 재시작 시 거래소에 이미 열려있는 포지션을 한 번의 호출로 복원한다."""
     for pos in ex.get_open_positions():
@@ -401,6 +534,29 @@ def compute_min_margin(balance: float, cfg: Config) -> float:
     return cfg.min_margin_usdt
 
 
+def should_pause_new_entries_for_low_balance(balance: float, cfg: Config) -> bool:
+    """Stop new entries when the account is below the survival threshold."""
+    return cfg.low_balance_new_entry_pause_threshold > 0 and balance < cfg.low_balance_new_entry_pause_threshold
+
+
+def is_low_balance_recovery_mode(balance: float, cfg: Config) -> bool:
+    """Allow only top-quality recovery entries below the survival threshold."""
+    return (
+        should_pause_new_entries_for_low_balance(balance, cfg)
+        and bool(getattr(cfg, "low_balance_recovery_enabled", False))
+    )
+
+
+def passes_low_balance_recovery_gate(candidate: dict, cfg: Config) -> bool:
+    """Below the survival threshold, trade only candidates with extra cushion."""
+    probability = float(candidate.get("probability", 0.0))
+    score = float(candidate.get("score", 0.0))
+    return (
+        probability >= getattr(cfg, "low_balance_recovery_min_probability", 1.0)
+        and score >= getattr(cfg, "low_balance_recovery_min_score", 1.0)
+    )
+
+
 def compute_aggregate_worst_case_loss_pct(pm: PositionManager, total_balance: float) -> float:
     """[2026-08-09] 계좌 소진 방지 강화 요청: 현재 보유한 모든 포지션이 동시에 전부 손절까지
     가는 최악의 시나리오를 가정했을 때, 잔고 대비 몇 %를 잃는지 계산한다. 개별 포지션은
@@ -431,8 +587,25 @@ def passes_aggregate_risk_filter(pm: PositionManager, cfg: Config, total_balance
     return aggregate_margin_pct < cfg.max_aggregate_margin_pct
 
 
-def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str) -> bool:
-    """Skip entries when 5m volatility is too small to justify the default stop width."""
+def compute_stop_loss_pct(cfg: Config, side: str, entered_at: float | None = None) -> tuple[float, bool]:
+    """[2026-08-11 사용자요청] SHORT 전용 손절폭(있으면) + 진입 직후 유예기간 동안의 확장폭을
+    반영해 최종 손절 %를 계산한다. entered_at=None이면 "지금 막 진입하는 시점"으로 보고
+    유예기간이 항상 적용된 것으로 취급한다. (widened, 유예중인지) 튜플을 반환한다."""
+    base = cfg.short_stop_loss_pct if side == "SHORT" and cfg.short_stop_loss_pct > 0 else cfg.stop_loss_pct
+    if cfg.stop_loss_grace_sec <= 0:
+        return base, False
+    if entered_at is None or (time.time() - entered_at) < cfg.stop_loss_grace_sec:
+        return base * cfg.stop_loss_grace_widen_mult, True
+    return base, False
+
+
+def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str, side: str) -> bool:
+    """Skip entries when 5m volatility is too small OR too large relative to the stop width.
+
+    [2026-08-11 사용자요청] 기존엔 하한선(변동성이 너무 작으면 스킵)만 있었다 — 실측 결과
+    SHORT 손절의 39%가 진입 1분 이내(순수 STOP_LOSS 중앙값 1.84분)에 발생, LONG은 거의
+    없었던 것과 대비돼(중앙값 4.55분, 1분내 0건) 휩쏘(노이즈가 손절폭보다 커서 방향과
+    무관하게 스탑에 스치는 현상)로 판단, 상한선을 추가했다."""
     try:
         df_5m = ex.get_klines(symbol, interval="5m")
         df_5m = add_indicators(df_5m, cfg)
@@ -440,10 +613,113 @@ def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str) -> 
         if curr_5m["close"] <= 0:
             return True
         atr_pct_5m = (curr_5m["atr"] / curr_5m["close"]) * 100
-        stop_dist_pct = cfg.stop_loss_pct / 4.0  # current default leverage anchor
-        return atr_pct_5m >= stop_dist_pct * cfg.min_atr_vs_stop_ratio
+        # 진입 전 필터라 유예기간(그라운드 확장)은 여기 반영하지 않는다 — SHORT전용값만 반영.
+        base_stop_loss_pct = cfg.short_stop_loss_pct if side == "SHORT" and cfg.short_stop_loss_pct > 0 else cfg.stop_loss_pct
+        stop_dist_pct = base_stop_loss_pct / 4.0  # current default leverage anchor
+        if atr_pct_5m < stop_dist_pct * cfg.min_atr_vs_stop_ratio:
+            return False
+        if cfg.max_atr_vs_stop_ratio > 0 and atr_pct_5m > stop_dist_pct * cfg.max_atr_vs_stop_ratio:
+            return False
+        return True
     except Exception:
         return True
+
+
+def passes_one_min_noise_filter(ex: Exchange, cfg: Config, symbol: str, side: str) -> bool:
+    """Avoid entering on a 1m indecision/noise candle without waiting a whole extra candle.
+
+    A huge wick relative to the body means price is whipping both ways inside the
+    current minute.  That is exactly where the recent sub-1m stop/early-exit
+    losses came from.  If data is missing, stay neutral so this does not become
+    a broad trade killer.
+    """
+    if not getattr(cfg, "one_min_noise_filter_enabled", True):
+        return True
+    try:
+        df_1m = ex.get_klines(symbol, interval="1m")
+        if len(df_1m) < 1:
+            return True
+        curr = df_1m.iloc[-1]
+        open_, high, low, close = map(float, (curr["open"], curr["high"], curr["low"], curr["close"]))
+        body = abs(close - open_)
+        full_range = high - low
+        if open_ <= 0 or high <= 0 or low <= 0 or full_range <= 0:
+            return True
+        if side == "LONG" and close < open_:
+            return False
+        if side == "SHORT" and close > open_:
+            return False
+        if body <= 0:
+            return False
+        wick = full_range - body
+        return (wick / body) <= getattr(cfg, "one_min_noise_max_wick_body_ratio", 2.5)
+    except Exception:
+        return True
+
+
+def passes_short_scalp_reversal_filter(ex: Exchange, cfg: Config, symbol: str) -> bool:
+    """Block SHORT scalp entries after a 1m intrabar bounce from the low.
+
+    This is stricter than assess_short_reversal_risk(): recent live losses showed
+    that merely lowering priority/size still allowed repeated SHORT whipsaws.
+    The filter uses only the latest closed/available 1m candle shape, matching
+    the offline backtest rule: if the candle closes too far above its low, the
+    selloff was already absorbed and SHORT entry is skipped.
+    """
+    max_close_from_low_pct = getattr(cfg, "short_scalp_max_close_from_low_pct", 0.0)
+    if max_close_from_low_pct <= 0:
+        return True
+    try:
+        df_1m = ex.get_klines(symbol, interval="1m")
+        if len(df_1m) < 1:
+            return True
+        curr = df_1m.iloc[-1]
+        low = float(curr["low"])
+        close = float(curr["close"])
+        if low <= 0 or close <= 0:
+            return True
+        close_from_low_pct = (close / low - 1) * 100
+        return close_from_low_pct <= max_close_from_low_pct
+    except Exception:
+        return True
+
+
+def assess_short_reversal_risk(ex: Exchange, cfg: Config, symbol: str) -> dict:
+    """Flag SHORT setups that may be late into a snapback, without blocking them.
+
+    The goal is to preserve scalp-loop trade count: risky shorts are still
+    eligible, but they are ranked behind cleaner candidates and sized smaller.
+    """
+    if not getattr(cfg, "short_reversal_risk_enabled", True):
+        return {"risky": False, "reasons": []}
+    reasons = []
+    try:
+        df_1m = ex.get_klines(symbol, interval="1m")
+        if len(df_1m) >= 1:
+            curr = df_1m.iloc[-1]
+            open_, high, low, close = map(float, (curr["open"], curr["high"], curr["low"], curr["close"]))
+            body = abs(close - open_)
+            lower_wick = min(open_, close) - low
+            if close > open_:
+                reasons.append("1m_bullish_snapback")
+            if body > 0 and lower_wick / body >= 1.5:
+                reasons.append("1m_long_lower_wick")
+    except Exception:
+        pass
+    try:
+        df_5m = ex.get_klines(symbol, interval="5m")
+        if len(df_5m) >= 1:
+            curr = df_5m.iloc[-1]
+            open_, high, low, close = map(float, (curr["open"], curr["high"], curr["low"], curr["close"]))
+            body = abs(close - open_)
+            lower_wick = min(open_, close) - low
+            if close > open_:
+                reasons.append("5m_bullish_snapback")
+            if body > 0 and lower_wick / body >= 1.2:
+                reasons.append("5m_long_lower_wick")
+    except Exception:
+        pass
+    return {"risky": bool(reasons), "reasons": reasons}
 
 
 def aggregate_risk_size_multiplier(pm: PositionManager, cfg: Config, total_balance: float) -> float:
@@ -630,12 +906,14 @@ def try_average_down(ex: Exchange, pm: PositionManager, cfg: Config, symbol: str
         # 체결되면 다른 쪽은 대상이 없어 조용히 무시되거나 거부될 뿐, 무보호 상태보다 항상 낫다).
         try:
             new_entry = live_pos["entry_price"]
+            stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
             if pos.side == "LONG":
-                stop_price = new_entry * (1 - cfg.stop_loss_pct / 100 / leverage)
+                stop_price = new_entry * (1 - stop_loss_pct / 100 / leverage)
             else:
-                stop_price = new_entry * (1 + cfg.stop_loss_pct / 100 / leverage)
+                stop_price = new_entry * (1 + stop_loss_pct / 100 / leverage)
             stop_order = ex.place_stop_market(symbol, pos.side, abs(live_pos["amount"]), stop_price)
             pm.positions[symbol].stop_order_id = stop_order["algoId"]
+            pm.positions[symbol].stop_loss_widened = widened
             if old_stop_order_id:
                 ex.cancel_order(symbol, old_stop_order_id)
         except Exception:
@@ -733,6 +1011,10 @@ def check_hourly_soft_stop(ex: Exchange, cfg: Config, pm: PositionManager, symbo
     """
     pos = pm.positions.get(symbol)
     if pos is None:
+        return False
+
+    # [2026-08-11 사용자요청] 진입 직후 순간 노이즈로 즉시 발동하는 걸 막는 최소 보유시간 가드.
+    if cfg.soft_stop_min_hold_sec > 0 and (time.time() - pos.entered_at) < cfg.soft_stop_min_hold_sec:
         return False
 
     try:
@@ -869,12 +1151,14 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
             # 무방비였다 — execute_entry()와 동일한 방식으로 여기서도 등록한다.
             pos = pm.positions[symbol]
             try:
+                stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
                 if pos.side == "LONG":
-                    stop_price = pos.entry_price * (1 - cfg.stop_loss_pct / 100 / leverage)
+                    stop_price = pos.entry_price * (1 - stop_loss_pct / 100 / leverage)
                 else:
-                    stop_price = pos.entry_price * (1 + cfg.stop_loss_pct / 100 / leverage)
+                    stop_price = pos.entry_price * (1 + stop_loss_pct / 100 / leverage)
                 stop_order = ex.place_stop_market(symbol, pos.side, pos.quantity, stop_price)
                 pos.stop_order_id = stop_order["algoId"]
+                pos.stop_loss_widened = widened
             except Exception:
                 log.exception("[%s] 새로 발견한 포지션 STOP_MARKET 등록 실패 — 폴링 기반 손절로 대체됨", symbol)
                 # [2026-08-07] 3회 재발 확인 후 근본 개선: 초고빈도 수동매매 심볼(HFTUSDT/HEIUSDT)에서
@@ -931,12 +1215,14 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
                 # (reduceOnly라 트리거돼도 거부될 뿐), 취소 자체는 새 주문이 확인된 뒤에 한다.
                 try:
                     leverage = pos.leverage or 1.0
+                    stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
                     if pos.side == "LONG":
-                        stop_price = pos.entry_price * (1 - cfg.stop_loss_pct / 100 / leverage)
+                        stop_price = pos.entry_price * (1 - stop_loss_pct / 100 / leverage)
                     else:
-                        stop_price = pos.entry_price * (1 + cfg.stop_loss_pct / 100 / leverage)
+                        stop_price = pos.entry_price * (1 + stop_loss_pct / 100 / leverage)
                     stop_order = ex.place_stop_market(symbol, pos.side, pos.quantity, stop_price)
                     pos.stop_order_id = stop_order["algoId"]
+                    pos.stop_loss_widened = widened
                     if old_stop_order_id:
                         ex.cancel_order(symbol, old_stop_order_id)
                 except Exception:
@@ -998,12 +1284,14 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
                 # 취소한다(무보호 구간 방지).
                 try:
                     leverage = pos.leverage or 1.0
+                    stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
                     if pos.side == "LONG":
-                        stop_price = pos.entry_price * (1 - cfg.stop_loss_pct / 100 / leverage)
+                        stop_price = pos.entry_price * (1 - stop_loss_pct / 100 / leverage)
                     else:
-                        stop_price = pos.entry_price * (1 + cfg.stop_loss_pct / 100 / leverage)
+                        stop_price = pos.entry_price * (1 + stop_loss_pct / 100 / leverage)
                     stop_order = ex.place_stop_market(symbol, pos.side, pos.quantity, stop_price)
                     pos.stop_order_id = stop_order["algoId"]
+                    pos.stop_loss_widened = widened
                     if old_stop_order_id:
                         ex.cancel_order(symbol, old_stop_order_id)
                 except Exception:
@@ -1064,15 +1352,17 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
             missing = pos.stop_order_id is None or pos.stop_order_id not in live_algo_ids
             if missing:
                 leverage = pos.leverage or 1.0
+                stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
                 if pos.side == "LONG":
-                    stop_price = pos.entry_price * (1 - cfg.stop_loss_pct / 100 / leverage)
+                    stop_price = pos.entry_price * (1 - stop_loss_pct / 100 / leverage)
                 else:
-                    stop_price = pos.entry_price * (1 + cfg.stop_loss_pct / 100 / leverage)
+                    stop_price = pos.entry_price * (1 + stop_loss_pct / 100 / leverage)
                 existing_stop = ex.find_matching_stop_market_order(
                     live_algo_orders, symbol, pos.side, pos.quantity, stop_price,
                 )
                 if existing_stop:
                     pos.stop_order_id = int(existing_stop["algoId"])
+                    pos.stop_loss_widened = widened
                     log.info("[%s] 기존 STOP_MARKET(algoId=%s)을 거래소에서 발견해 채택 — 중복 등록 생략", symbol, pos.stop_order_id)
                     continue
                 if pos.stop_order_id:
@@ -1082,6 +1372,7 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
                 try:
                     stop_order = ex.place_stop_market(symbol, pos.side, pos.quantity, stop_price)
                     pos.stop_order_id = stop_order["algoId"]
+                    pos.stop_loss_widened = widened
                     tg.send(f"⚠️ {symbol} STOP_MARKET이 사라져 있던 걸 감지해 재등록했어요 (원인 불명, 안전망 작동)")
                 except Exception:
                     log.exception("[%s] 사라진 STOP_MARKET 재등록 실패 — 기존 폴링 기반 손절로 대체됨", symbol)
@@ -1091,6 +1382,28 @@ def reconcile_positions(ex: Exchange, pm: PositionManager, cfg: Config, tg: Tele
                         close_symbol_if_already_past_stop(ex, pm, cfg, symbol, tg)
                     except Exception:
                         log.exception("[%s] STOP_MARKET 실패 후 즉시 손절 확인 중 오류", symbol)
+                continue
+
+            # [2026-08-11 사용자요청] 진입 직후 유예기간 동안 넓혀뒀던 손절폭을, 유예기간이
+            # 지나면 원래 폭으로 다시 좁힌다(무보호 구간 없이 — 새 주문 먼저 등록 후 기존 취소).
+            if pos.stop_loss_widened and cfg.stop_loss_grace_sec > 0:
+                tightened_pct, still_widened = compute_stop_loss_pct(cfg, pos.side, pos.entered_at)
+                if not still_widened:
+                    leverage = pos.leverage or 1.0
+                    if pos.side == "LONG":
+                        stop_price = pos.entry_price * (1 - tightened_pct / 100 / leverage)
+                    else:
+                        stop_price = pos.entry_price * (1 + tightened_pct / 100 / leverage)
+                    old_stop_order_id = pos.stop_order_id
+                    try:
+                        stop_order = ex.place_stop_market(symbol, pos.side, pos.quantity, stop_price)
+                        pos.stop_order_id = stop_order["algoId"]
+                        pos.stop_loss_widened = False
+                        if old_stop_order_id:
+                            ex.cancel_order(symbol, old_stop_order_id)
+                        log.info("[%s] 진입 유예기간(%.0f초) 만료 — 손절폭을 원래 값(%.2f%%)으로 다시 좁힘", symbol, cfg.stop_loss_grace_sec, tightened_pct)
+                    except Exception:
+                        log.exception("[%s] 유예기간 만료 후 손절폭 재타이트 실패 — 넓혀진 손절폭으로 유지(무보호보단 안전)", symbol)
 
         # [2026-08-09] 위 안전망을 다 거치고 나서도 손절 주문조차 없는(UNPROTECTED) 포지션이
         # 남아있다면 — 등록도 실패하고 즉시청산 폴백도 실패한 최악의 경우이므로 — 확실히
@@ -1348,7 +1661,13 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     if probability < required_probability:
         return None
 
-    if not passes_whipsaw_volatility_filter(ex, cfg, symbol):
+    if not passes_whipsaw_volatility_filter(ex, cfg, symbol, signal):
+        return None
+
+    if not passes_one_min_noise_filter(ex, cfg, symbol, signal):
+        return None
+
+    if signal == "SHORT" and not passes_short_scalp_reversal_filter(ex, cfg, symbol):
         return None
 
     # 이미 과열됐거나(볼린저 밴드 이탈), 지금 이 캔들이 반대 방향으로 마감 중이면
@@ -1386,6 +1705,7 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
         return None
 
     if signal == "SHORT":
+        short_reversal_risk = assess_short_reversal_risk(ex, cfg, symbol)
         # 숏은 스윙이 아니라 스캘핑으로만 진입한다: 5분봉 기준으로 5분 내 목표 익절에
         # 도달할 만큼 변동성이 있을 때만 진입한다 (롱은 이 추가 체크가 없음, 스윙 유지).
         try:
@@ -1399,6 +1719,8 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
         target_price_move_pct = cfg.short_take_profit_min / max(expected_leverage, 1)
         if atr_pct_5m < target_price_move_pct:
             return None  # 5분봉 변동성으로 봤을 때 5분 내 목표 도달 가능성이 낮음
+    else:
+        short_reversal_risk = {"risky": False, "reasons": []}
 
     price = float(df.iloc[-1]["close"])
     candle_time = df.iloc[-1]["open_time"]
@@ -1407,9 +1729,15 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     # 않아서, 확률 80%인 후보보다 강도/속도만 우연히 높은 70%짜리가 먼저 뽑히는
     # 문제가 있었다 (실사용 중 발견됨).
     combined_score = probability * 0.7 + strength * 0.2 + speed * 0.1
+    entry_priority = combined_score
+    if short_reversal_risk.get("risky"):
+        entry_priority -= max(0.0, getattr(cfg, "short_reversal_risk_priority_penalty", 0.08))
     return {
         "symbol": symbol, "signal": signal, "strength": strength,
         "speed": speed, "score": combined_score, "probability": probability,
+        "entry_priority": entry_priority,
+        "short_reversal_risk": bool(short_reversal_risk.get("risky")),
+        "short_reversal_reasons": short_reversal_risk.get("reasons", []),
         "price": price, "candle_time": candle_time, "whale_signal": whale_signal,
         "avg_quote_volume": avg_quote_volume,
         "btc_mult": btc_mult,
@@ -1430,6 +1758,15 @@ def confirm_two_candle(pending_signals: dict, cfg: Config, candidate: dict) -> b
         return True
     pending_signals[symbol] = {"side": signal, "candle_time": candle_time}
     return False
+
+
+def should_confirm_candidate_two_candle(pending_signals: dict, cfg: Config, candidate: dict, total_balance: float) -> bool:
+    if (
+        is_low_balance_recovery_mode(total_balance, cfg)
+        and getattr(cfg, "low_balance_recovery_skip_two_candle_confirmation", True)
+    ):
+        return True
+    return confirm_two_candle(pending_signals, cfg, candidate)
 
 
 def entry_market_quality_ok(ex: Exchange, cfg: Config, symbol: str) -> bool:
@@ -1475,7 +1812,11 @@ def place_entry_order(ex: Exchange, cfg: Config, symbol: str, side: str, quantit
         return True
 
     book = ex.get_book_ticker(symbol)
-    price = book["bid"] if side == "LONG" else book["ask"]
+    pullback_pct = max(0.0, getattr(cfg, "limit_entry_pullback_pct", 0.0)) / 100
+    if side == "LONG":
+        price = float(book["bid"]) * (1 - pullback_pct)
+    else:
+        price = float(book["ask"]) * (1 + pullback_pct)
     order = ex.open_limit_position(symbol, side, quantity, price)
     order_id = order["orderId"]
     deadline = time.time() + cfg.limit_entry_wait_sec
@@ -1503,7 +1844,10 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
 
     # 여러 심볼을 스캔하는 동안 시간이 지나 가격이 이미 불리하게 움직였으면
     # (신호가 낡음) 이 진입은 건너뛴다 — "진입하자마자 마이너스로 시작" 방지.
-    fresh_price = ex.get_mark_price(symbol)
+    # [2026-08-11 사용자요청] REST 왕복(get_mark_price) 대신 WS 캐시 즉시조회(get_last_price_fast)
+    # 사용 — 이 조회 자체가 걸리는 시간 동안 가격이 더 움직여서 재검증에 계속 실패하던
+    # 문제를 줄인다(WS 없거나 오래됐으면 기존과 동일하게 REST로 안전하게 폴백).
+    fresh_price = ex.get_last_price_fast(symbol)
     adverse_move_pct = ((price - fresh_price) / price * 100) if signal == "LONG" else ((fresh_price - price) / price * 100)
     if adverse_move_pct > cfg.stale_signal_tolerance_pct:
         log.info(
@@ -1567,6 +1911,30 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
         log.info("[%s] 상관리스크 방어 배율 %.0f%% 적용", symbol, aggregate_mult * 100)
     ratio *= aggregate_mult
 
+    if is_low_balance_recovery_mode(total_balance, cfg):
+        recovery_mult = max(0.0, min(1.0, getattr(cfg, "low_balance_recovery_size_mult", 1.0)))
+        ratio *= recovery_mult
+        log.info(
+            "[%s] 저잔고 복구모드 — 고확률 후보만 진입, 비중 %.0f%% 추가 축소",
+            symbol, recovery_mult * 100,
+        )
+
+    if candidate.get("short_reversal_risk"):
+        reversal_mult = max(0.0, min(1.0, getattr(cfg, "short_reversal_risk_size_mult", 0.65)))
+        ratio *= reversal_mult
+        log.info(
+            "[%s] SHORT 되감기 위험(%s) — 진입은 유지하고 비중 %.0f%% 적용",
+            symbol, ",".join(candidate.get("short_reversal_reasons", [])) or "unknown", reversal_mult * 100,
+        )
+
+    if candidate.get("negative_ev_symbol"):
+        symbol_ev_mult = max(0.0, min(1.0, getattr(cfg, "negative_ev_symbol_size_mult", 0.60)))
+        ratio *= symbol_ev_mult
+        log.info(
+            "[%s] 심볼별 기대값 마이너스 — 거래수 유지를 위해 진입은 허용하고 비중 %.0f%% 적용",
+            symbol, symbol_ev_mult * 100,
+        )
+
     # [2026-08-07] 평소 유동성(최근 20개 캔들 평균 거래대금)이 낮을수록 비중을 축소한다.
     # 신호 판단에 쓰는 "이번 캔들 거래량 급증"은 고래 한 명이 만들 수 있어 비중 확대 근거로
     # 쓰면 위험하므로, 스파이크에 덜 흔들리는 평균값만 비중 스케일링에 사용한다.
@@ -1619,8 +1987,9 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
         effective_risk_pct = (cfg.risk_based_sizing_pct / 100) * risk_size_mult
         if risk_size_mult < 1.0:
             log.info("[%s] 리스크 기반 수량에도 방어 배율 %.0f%% 반영", symbol, risk_size_mult * 100)
-        stop_price = price * (1 - cfg.stop_loss_pct / 100 / leverage) if signal == "LONG" \
-            else price * (1 + cfg.stop_loss_pct / 100 / leverage)
+        _risk_sizing_stop_loss_pct, _ = compute_stop_loss_pct(cfg, signal)
+        stop_price = price * (1 - _risk_sizing_stop_loss_pct / 100 / leverage) if signal == "LONG" \
+            else price * (1 + _risk_sizing_stop_loss_pct / 100 / leverage)
         quantity = compute_risk_based_position_size(
             balance, symbol, ex, price, stop_price,
             effective_risk_pct, leverage, min_margin_usdt,
@@ -1670,12 +2039,14 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
         # TAKEUSDT -20%, HFTUSDT -8.45%)에도 거래소가 즉시 반응하도록 함. 실패해도 기존 폴링
         # 기반 손절이 그대로 남아있으니 진입 자체는 막지 않는다.
         try:
+            stop_loss_pct, widened = compute_stop_loss_pct(cfg, pos["side"], pm.positions[symbol].entered_at)
             if pos["side"] == "LONG":
-                stop_price = pos["entry_price"] * (1 - cfg.stop_loss_pct / 100 / leverage)
+                stop_price = pos["entry_price"] * (1 - stop_loss_pct / 100 / leverage)
             else:
-                stop_price = pos["entry_price"] * (1 + cfg.stop_loss_pct / 100 / leverage)
+                stop_price = pos["entry_price"] * (1 + stop_loss_pct / 100 / leverage)
             stop_order = ex.place_stop_market(symbol, pos["side"], abs(pos["amount"]), stop_price)
             pm.positions[symbol].stop_order_id = stop_order["algoId"]
+            pm.positions[symbol].stop_loss_widened = widened
         except Exception:
             log.exception("[%s] STOP_MARKET 등록 실패 — 기존 폴링 기반 손절로 대체됨", symbol)
             tg.notify_error(symbol, "STOP_MARKET 등록 실패(폴링 손절로 대체)")
@@ -1744,14 +2115,39 @@ def select_and_enter_best_candidates(ex: Exchange, pm: PositionManager, cfg: Con
         return
 
     # 확률을 최우선 기준으로, score(확률*0.7+강도*0.2+속도*0.1)를 2차 기준으로 정렬한다.
-    candidates = sorted(candidates, key=lambda c: (c["probability"], c["score"]), reverse=True)
+    # SHORT 되감기 위험은 후보를 제거하지 않고 entry_priority만 낮춰, 거래수는 유지하되
+    # 같은 주기 안에 더 깨끗한 후보가 있으면 그쪽을 먼저 태운다.
+    candidates = sorted(candidates, key=lambda c: (c["probability"], c.get("entry_priority", c["score"])), reverse=True)
     log.info(
         "이번 주기 진입 후보 %d개 (상위: %s, 확률/score순 정렬) — 남은 슬롯 %d개",
         len(candidates),
-        [(c["symbol"], round(c["probability"], 2), round(c["score"], 2)) for c in candidates[:5]],
+        [(c["symbol"], round(c["probability"], 2), round(c.get("entry_priority", c["score"]), 2)) for c in candidates[:5]],
         slots,
     )
     tg.notify_scan_candidates(candidates, slots)
+
+    if is_low_balance_recovery_mode(total_balance, cfg):
+        original_count = len(candidates)
+        candidates = [c for c in candidates if passes_low_balance_recovery_gate(c, cfg)]
+        slots = min(slots, max(0, getattr(cfg, "low_balance_recovery_max_positions", 1)))
+        if not candidates or slots <= 0:
+            log.error(
+                "총자산 %.2f USDT 저잔고 복구모드 — 후보 %d개 중 고확률 기준(확률 %.2f, score %.2f) 통과 없음",
+                total_balance, original_count,
+                getattr(cfg, "low_balance_recovery_min_probability", 1.0),
+                getattr(cfg, "low_balance_recovery_min_score", 1.0),
+            )
+            return
+        log.error(
+            "총자산 %.2f USDT 저잔고 복구모드 — 후보 %d개 중 고확률 %d개만 최대 %d개 진입 허용",
+            total_balance, original_count, len(candidates), slots,
+        )
+    elif should_pause_new_entries_for_low_balance(total_balance, cfg):
+        log.error(
+            "총자산 %.2f USDT가 생존모드 기준 %.2f USDT 미만 — 후보 시그널은 표시하지만 신규 진입 주문은 생략",
+            total_balance, cfg.low_balance_new_entry_pause_threshold,
+        )
+        return
 
     entered = 0
     for candidate in candidates:
@@ -1818,12 +2214,14 @@ def _compute_ws_restart_backoff_sec(consecutive_restart_count: int, cfg: Config)
     return min(cfg.ws_restart_backoff_base_sec * (2 ** consecutive_restart_count), cfg.ws_restart_backoff_max_sec)
 
 
-def _spawn_ws_worker(role: str, shard_index: int, shard_count: int) -> "subprocess.Popen":
+def _spawn_ws_worker(role: str, shard_index: int, shard_count: int, symbols: list | None = None) -> "subprocess.Popen":
     import subprocess
     env = dict(os.environ)
     env["WS_WORKER_ROLE"] = role
     env["WS_SHARD_INDEX"] = str(shard_index)
     env["WS_SHARD_COUNT"] = str(shard_count)
+    if symbols is not None:
+        env["WS_WORKER_SYMBOLS"] = __import__("json").dumps(list(symbols), ensure_ascii=False)
     return subprocess.Popen(
         [sys.executable, "-m", "bot.ws_worker"],
         cwd=str(Path(__file__).resolve().parent.parent),
@@ -1853,10 +2251,10 @@ def start_ws_layer(ex: Exchange, cfg: Config, symbols: list) -> dict:
         if cfg.ws_market_data_enabled:
             shard_count = max(1, cfg.ws_market_shard_count)
             for i in range(shard_count):
-                process = _spawn_ws_worker("market", i, shard_count)
                 cache_path, hb_path = _ws_worker_paths("market", i, shard_count)
                 status_path = _ws_worker_status_path("market", i, shard_count)
                 shard_symbols = symbols[i::shard_count] if shard_count > 1 else list(symbols)
+                process = _spawn_ws_worker("market", i, shard_count, symbols=symbols)
                 handles["workers"].append({
                     "process": process, "started_at": time.time(), "role": "market",
                     "shard_index": i, "shard_count": shard_count, "symbols": shard_symbols,
@@ -1940,12 +2338,14 @@ def ws_layer_needs_restart(cfg: Config, handles: dict, canary_symbol: str) -> li
         return []
 
     stale_indices = []
+    restart_reasons = {}
     for idx, w in enumerate(workers):
         process, started_at = w.get("process"), w.get("started_at")
         if process is None or started_at is None:
             continue
         if process.poll() is not None:  # 프로세스 자체가 이미 종료됨(크래시 등)
             stale_indices.append(idx)
+            restart_reasons[idx] = "process_exited"
             continue
         if time.time() - started_at < WS_WORKER_STARTUP_GRACE_SEC:
             continue  # 아직 초기 시딩 유예시간 이내 — 판단 보류
@@ -1958,12 +2358,15 @@ def ws_layer_needs_restart(cfg: Config, handles: dict, canary_symbol: str) -> li
         last_msg_ts = health.get("last_market_message_ts", 0)
         if last_msg_ts and time.time() - last_msg_ts > cfg.ws_message_max_staleness_sec:
             stale_indices.append(idx)
+            restart_reasons[idx] = f"message_stale:{time.time() - last_msg_ts:.1f}s>{cfg.ws_message_max_staleness_sec:.1f}s"
             continue
         if health.get("error_count_60s", 0) >= cfg.ws_max_error_count_60s:
             stale_indices.append(idx)
+            restart_reasons[idx] = f"error_count_60s:{health.get('error_count_60s', 0)}>= {cfg.ws_max_error_count_60s}"
             continue
         if health.get("consecutive_read_loop_errors", 0) >= cfg.ws_max_consecutive_read_loop_errors:
             stale_indices.append(idx)
+            restart_reasons[idx] = f"consecutive_read_loop_errors:{health.get('consecutive_read_loop_errors', 0)}>= {cfg.ws_max_consecutive_read_loop_errors}"
             continue
 
     # canary 심볼 신선도는 그 심볼을 실제로 담당하는 샤드 기준으로 확인한다 — 못 찾으면
@@ -1975,15 +2378,18 @@ def ws_layer_needs_restart(cfg: Config, handles: dict, canary_symbol: str) -> li
             owner = next((idx for idx, w in market_workers if canary_symbol in w.get("symbols", [])), None)
             if owner is not None:
                 cache = FileBackedKlineCache(workers[owner]["cache_path"], workers[owner]["heartbeat_path"], status_path=workers[owner].get("status_path"))
-                if not cache.is_fresh(canary_symbol, cfg.ws_kline_max_staleness_sec) and owner not in stale_indices:
+                if not cache.is_fresh(canary_symbol, cfg.ws_canary_max_staleness_sec) and owner not in stale_indices:
                     stale_indices.append(owner)
+                    restart_reasons[owner] = f"canary_stale:{canary_symbol}>{cfg.ws_canary_max_staleness_sec:.1f}s"
             else:
                 multi = MultiFileBackedKlineCache([FileBackedKlineCache(w["cache_path"], w["heartbeat_path"], status_path=w.get("status_path")) for _, w in market_workers])
-                if not multi.is_fresh(canary_symbol, cfg.ws_kline_max_staleness_sec):
+                if not multi.is_fresh(canary_symbol, cfg.ws_canary_max_staleness_sec):
                     for idx, _ in market_workers:
                         if idx not in stale_indices:
                             stale_indices.append(idx)
+                            restart_reasons[idx] = f"canary_missing_or_stale:{canary_symbol}>{cfg.ws_canary_max_staleness_sec:.1f}s"
 
+    handles["last_restart_reasons"] = restart_reasons
     return stale_indices
 
 
@@ -2030,11 +2436,21 @@ def main():
     hourly_seen_candidates: set = set()  # 1시간 동안 신호+확률 통과한 코인(실제 거래 여부 무관, 1시간마다 리셋)
     hourly_check_state: dict = {}  # 심볼별로 마지막에 1시간봉 재평가한 캔들 시각 (약손절 판단용)
 
-    last_digest_at = 0.0
     last_time_sync_at = time.time()
     last_tune_at = time.time()
+    last_btc_trend_at = 0.0  # 시작 직후 바로 한 번 보내지도록 0으로 초기화
+    last_trade_review_at = time.time()
+    last_symbol_refresh_at = time.time()
     TIME_SYNC_INTERVAL_SEC = 1800  # 30분마다 서버 시간과 다시 맞춰서 오차 누적을 방지
     TUNE_INTERVAL_SEC = 3600  # 1시간마다 손익 분석 후 필요하면 텔레그램으로 조정 제안
+    BTC_TREND_INTERVAL_SEC = 1800  # [2026-08-11 사용자요청] 30분마다 BTC 멀티타임프레임 흐름을 텔레그램으로 안내(참고용)
+    TRADE_REVIEW_INTERVAL_SEC = 1800  # [2026-08-11 사용자요청] 30분마다 수익/손실 복기 — 정기요약(digest)은 이걸로 대체됨
+    # [2026-08-12 사용자요청] "거래대금 상위 50개를 상시로 스캔" — 기존엔 symbols가 시작
+    # 시점에 딱 한 번만 조회되고 실행 중엔 안 바뀌어서, 오래 켜두면 새로 상위권에 들어온
+    # 코인을 놓쳤다. 30분마다 REST 스캔 대상 목록만 다시 조회해 갱신한다(WS 워커가 담당하는
+    # 심볼 집합은 시작 시점 그대로 유지 — 새로 추가된 심볼은 Exchange.get_klines()의 기존
+    # REST 폴백 경로로 안전하게 처리됨, WS 워커 재기동 없이도 동작에 지장 없음).
+    SYMBOL_REFRESH_INTERVAL_SEC = 1800
 
     while True:
         cycle_start = time.time()
@@ -2065,11 +2481,12 @@ def main():
             # 정상인 다른 샤드까지 같이 죽였다 살리면 그만큼 불필요하게 REST 폴백 구간이
             # 늘어난다. 전체 워커 목록을 다시 만드는 대신, stop_ws_layer(only_indices=...)로
             # 문제 워커만 정리한 뒤 같은 역할/샤드 정보로 그 자리만 다시 띄운다.
-            log.warning("WS 워커 %d개(idx=%s)가 응답불능/데이터끊김으로 판단돼 재시작합니다", len(restart_now), restart_now)
+            restart_reasons = {idx: ws_handles.get("last_restart_reasons", {}).get(idx, "unknown") for idx in restart_now}
+            log.warning("WS 워커 %d개(idx=%s)가 응답불능/데이터끊김으로 판단돼 재시작합니다 — reasons=%s", len(restart_now), restart_now, restart_reasons)
             stop_ws_layer(ex, ws_handles, only_indices=restart_now)
             for idx in restart_now:
                 w = ws_handles["workers"][idx]
-                new_process = _spawn_ws_worker(w["role"], w["shard_index"], w["shard_count"])
+                new_process = _spawn_ws_worker(w["role"], w["shard_index"], w["shard_count"], symbols=symbols if w.get("role") == "market" else None)
                 w["process"] = new_process
                 w["started_at"] = time.time()
                 backoff = _compute_ws_restart_backoff_sec(w["consecutive_restart_count"], cfg)
@@ -2098,6 +2515,29 @@ def main():
             except Exception:
                 log.exception("1시간 자동 분석 중 오류")
             hourly_seen_candidates.clear()
+
+        if cfg.auto_symbols and time.time() - last_symbol_refresh_at >= SYMBOL_REFRESH_INTERVAL_SEC:
+            last_symbol_refresh_at = time.time()
+            try:
+                refreshed = ex.get_active_usdt_perpetual_symbols(limit=cfg.max_auto_symbols)
+                added = sorted(set(refreshed) - set(symbols))
+                removed = sorted(set(symbols) - set(refreshed))
+                symbols = refreshed
+                if added or removed:
+                    log.info(
+                        "거래대금 상위 %d개 스캔 목록 갱신 — 추가=%s 제외=%s (총 %d개)",
+                        cfg.max_auto_symbols, added, removed, len(symbols),
+                    )
+            except Exception:
+                log.exception("스캔 심볼 목록 갱신 실패 — 기존 목록 유지")
+
+        if time.time() - last_btc_trend_at >= BTC_TREND_INTERVAL_SEC:
+            last_btc_trend_at = time.time()
+            try:
+                btc_trend = analyze_btc_multi_timeframe_trend(ex, cfg)
+                tg.send(format_btc_trend_digest(btc_trend))
+            except Exception:
+                log.exception("BTC 멀티타임프레임 흐름 분석 중 오류")
 
         try:
             total_balance = ex.get_total_margin_balance()
@@ -2129,12 +2569,16 @@ def main():
             log.exception("일일 목표 체크 중 오류")
 
         now = time.time()
-        if now - last_digest_at >= cfg.telegram_digest_interval_sec:
-            last_digest_at = now
+        if now - last_trade_review_at >= TRADE_REVIEW_INTERVAL_SEC:
+            last_trade_review_at = now
             try:
-                tg.send_digest(total_balance)
+                diagnosis, changes = analyze_recent_trade_review(ex, cfg, TRADE_REVIEW_INTERVAL_SEC)
+                if changes:
+                    tg.propose_tuning(diagnosis, changes)
+                else:
+                    tg.send(diagnosis)
             except Exception:
-                log.exception("텔레그램 정기 요약 전송 실패")
+                log.exception("30분 거래 복기 중 오류")
 
         try:
             reconcile_positions(ex, pm, cfg, tg)
@@ -2189,19 +2633,21 @@ def main():
         elif not tg.trading_paused:
             negative_ev_symbols = compute_negative_ev_symbols(cfg)
             if negative_ev_symbols:
-                log.info("기대값 마이너스로 이번 주기 제외된 심볼: %s", sorted(negative_ev_symbols))
+                log.info("기대값 마이너스 심볼은 제외하지 않고 후순위/비중축소로 스캔 유지: %s", sorted(negative_ev_symbols))
             for symbol in symbols:
                 if pm.is_tracked(symbol):
                     continue
                 if pm.is_symbol_blacklisted(symbol):
                     continue
-                if symbol in negative_ev_symbols:
-                    continue
                 try:
                     candidate = scan_entry_candidate(ex, cfg, symbol, total_balance)
                     if candidate:
+                        if symbol in negative_ev_symbols:
+                            candidate["negative_ev_symbol"] = True
+                            penalty = max(0.0, 1.0 - getattr(cfg, "negative_ev_symbol_size_mult", 0.60)) * 0.10
+                            candidate["entry_priority"] = candidate.get("entry_priority", candidate["score"]) - penalty
                         hourly_seen_candidates.add(symbol)  # 실제 진입 여부와 무관하게 신호 감지 자체를 기록
-                        if confirm_two_candle(pending_signals, cfg, candidate):
+                        if should_confirm_candidate_two_candle(pending_signals, cfg, candidate, total_balance):
                             candidates.append(candidate)
                 except Exception:
                     log.exception("[%s] 스캔 중 오류", symbol)
