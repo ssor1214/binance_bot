@@ -133,6 +133,13 @@ class Config:
     low_balance_recovery_min_score: float = _float("LOW_BALANCE_RECOVERY_MIN_SCORE", 0.68)
     low_balance_recovery_size_mult: float = _float("LOW_BALANCE_RECOVERY_SIZE_MULT", 0.75)
 
+    # [2026-08-12 사용자요청] "자산이 5불만 남으면 거래 자체를 멈춰줘" — 저잔고 복구모드
+    # (위, 기본 17달러 미만에서도 고확률 후보는 계속 진입)와 별개로, 이 절대 하한선
+    # 밑으로는 예외 없이 신규 진입을 완전히 차단한다(0이면 비활성). 기존 포지션의
+    # 손절/익절/트레일링 관리는 이 스위치와 무관하게 계속된다 — 이미 보유 중인 포지션을
+    # 방치하는 게 아니라 "더 이상 새 리스크를 추가하지 않는" 안전장치다.
+    critical_balance_stop_usdt: float = _float("CRITICAL_BALANCE_STOP_USDT", 5.0)
+
     balance_tier_threshold: float = _float("BALANCE_TIER_THRESHOLD", 300.0)
     max_positions_low: int = _int("MAX_POSITIONS_LOW", 3)
     max_positions_high: int = _int("MAX_POSITIONS_HIGH", 8)

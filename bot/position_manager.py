@@ -149,6 +149,10 @@ class PositionManager:
         # 이건 "이겼을 때"뿐 아니라 "심볼이 바뀌어도" 계속 누적되는 전역 카운터다.
         self.global_consecutive_losses: int = 0
         self.global_pause_until: float = 0.0
+        # [2026-08-12 사용자요청] 자산 절대 하한선(critical_balance_stop_usdt) 진입/해제
+        # 상태전환에서만 텔레그램 알림을 보내기 위한 플래그 — 매 주기(30~40초)마다 같은
+        # 알림을 반복 전송하지 않도록 한다.
+        self.critical_balance_stop_notified: bool = False
         # [2026-08-06] 같은 코인 단시간 연속 재진입 리스크 완화용 — symbol -> (사용한 비중, 진입시각)
         self.symbol_recent_ratio: dict[str, tuple[float, float]] = {}
         self.recent_trade_results: list[dict] = []

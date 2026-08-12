@@ -11,6 +11,7 @@ subprocess.run()이 영원히 리턴 안 되므로 감시 스크립트도 사실
 주기적으로 확인하다가 너무 오래(HEARTBEAT_STALE_SEC) 안 갱신되면 "멈췄다"고 판단해
 process.kill()로 강제종료한다 — OS 레벨 강제종료는 대상 프로세스가 내부에서 뭘 하고 있든
 (GIL을 붙잡은 tight loop라도) 항상 통한다."""
+import ctypes
 import datetime
 import subprocess
 import sys
@@ -21,6 +22,66 @@ LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "supervisor.log"
 HEARTBEAT_PATH = LOG_DIR / "heartbeat.txt"  # bot/main.py의 HEARTBEAT_PATH와 반드시 동일해야 함
+
+# [2026-08-12 사용자요청] "RAM 문제 등으로 멈추면 새로 시작 + RAM 수급까지 자동으로" —
+# 이 PC는 4GB RAM 중 여유분이 0.1~0.6GB까지 떨어지는 일이 실측됐고(사용자가 직접 확인),
+# 그 상태에서 pandas 등 무거운 프로세스가 뜨면 MemoryError로 봇이 죽을 위험이 있다.
+# 재시작만으론 부족하다 — 같은 RAM 부족 상태로 재시작해봐야 다시 죽을 뿐이므로, 재시작
+# 전후로 여유 RAM을 확보한다. Windows 전용(GlobalMemoryStatusEx), 이 프로젝트가 이
+# 환경에서만 운영되므로 별도 의존성(psutil 등) 추가 없이 ctypes로 직접 조회한다.
+LOW_RAM_MB_THRESHOLD = 500
+RAM_CHECK_INTERVAL_SEC = 60
+# [매우 중요] 여기 나열된 것만 자동 종료한다 — 실거래/모니터링 관련 프로세스(bot.main,
+# ws_worker, dashboard/server.py 등)는 절대 포함시키면 안 된다. ChatGPT.exe는 사용자가
+# 이 세션 중 두 차례 직접 승인해 종료한 전례가 있는, 매매와 무관한 비필수 앱이라 자동
+# 종료 후보로 확정했다. 새 항목을 추가할 땐 반드시 매매/모니터링과 무관함을 먼저 확인할 것.
+KNOWN_SAFE_TO_CLOSE = ["ChatGPT.exe"]
+
+
+class _MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+def get_available_ram_mb() -> float | None:
+    """Windows GlobalMemoryStatusEx로 현재 가용 물리메모리(MB)를 조회한다. 실패하면 None
+    (RAM 관리 기능을 비활성화한 것과 동일하게 동작 — 감시 자체를 막지 않기 위함)."""
+    try:
+        stat = _MemoryStatusEx()
+        stat.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return None
+        return stat.ullAvailPhys / (1024 * 1024)
+    except Exception:
+        return None
+
+
+def free_ram_if_low() -> None:
+    """가용 RAM이 LOW_RAM_MB_THRESHOLD 밑이면 KNOWN_SAFE_TO_CLOSE 목록의 프로세스만
+    종료를 시도한다. 실거래/대시보드 프로세스는 이 목록에 없으므로 절대 건드리지 않는다."""
+    avail = get_available_ram_mb()
+    if avail is None or avail >= LOW_RAM_MB_THRESHOLD:
+        return
+    log(f"가용 RAM {avail:.0f}MB로 부족(기준 {LOW_RAM_MB_THRESHOLD}MB) — 비필수 프로세스 정리 시도: {KNOWN_SAFE_TO_CLOSE}")
+    for name in KNOWN_SAFE_TO_CLOSE:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/IM", name, "/F"],
+                capture_output=True, timeout=10, text=True,
+            )
+            if result.returncode == 0:
+                log(f"{name} 종료 완료")
+        except Exception as exc:
+            log(f"{name} 종료 시도 중 오류(무시하고 계속): {exc}")
 
 RESTART_DELAY_SEC = 5
 # bot.main이 "이미 다른 인스턴스가 실행 중"이라 스스로 물러난 경우의 종료코드(bot/main.py의
@@ -39,7 +100,14 @@ HEARTBEAT_CHECK_INTERVAL_SEC = 15
 def log(message: str):
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"{ts} [supervisor] {message}"
-    print(line)
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        # [2026-08-12] 콘솔 코드페이지(cp949 등)가 em-dash(—) 같은 일부 유니코드 문자를
+        # 인코딩 못 해 print() 자체가 죽는 걸 실측했다 — 감시 스크립트가 로그 출력 때문에
+        # 죽으면 안 되므로, 콘솔 출력만 깨진 문자를 무시하고 계속 진행한다(파일 로그는
+        # 항상 UTF-8이라 원본 내용이 그대로 보존됨).
+        print(line.encode(sys.stdout.encoding or "utf-8", errors="replace").decode(sys.stdout.encoding or "utf-8", errors="replace"))
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
@@ -68,12 +136,18 @@ def run_and_watch() -> int:
     종료코드(강제종료한 경우 특수한 음수값 대신 -9를 그대로 씀 — Popen이 kill 후 wait하면
     보통 -9(SIGKILL) 또는 플랫폼에 따라 다른 값이 나오는데, 우리는 아래 main()에서 이 반환값을
     DUPLICATE_INSTANCE_EXIT_CODE와만 비교하므로 정확한 시그널 번호는 중요치 않다)."""
+    free_ram_if_low()  # 재시작 직후 다시 RAM 부족으로 죽는 걸 막기 위해 기동 전에 한 번 확보
     process_started_at = time.time()
     process = subprocess.Popen([sys.executable, "-m", "bot.main"])
+    last_ram_check_at = 0.0
     while True:
         returncode = process.poll()
         if returncode is not None:
             return returncode
+
+        if time.time() - last_ram_check_at >= RAM_CHECK_INTERVAL_SEC:
+            last_ram_check_at = time.time()
+            free_ram_if_low()
 
         age = heartbeat_age_sec(process_started_at=process_started_at)
         if age is not None and age > HEARTBEAT_STALE_SEC:

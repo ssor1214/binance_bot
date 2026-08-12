@@ -229,20 +229,15 @@ def analyze_btc_multi_timeframe_trend(ex: Exchange, cfg: Config) -> dict:
     return results
 
 
-def analyze_recent_trade_review(ex: Exchange, cfg: Config, window_sec: float, ledger_path: str = "logs/trade_ledger.jsonl") -> tuple[str, dict]:
-    """[2026-08-11 사용자요청] "30분마다 수익/손실을 복기하고 분석 결과를 텔레그램으로" —
-    직전 window_sec(기본 1800초) 동안의 봇 거래를 다시 불러와 승률/손익을 요약하고,
-    손실거래 중 최근 최대 5건은 실제 차트(청산 후 15분)를 다시 조회해 "조금만 더 버텼으면
-    회복됐을 손실(휩쏘성 조기청산)"인지 확인한다(API 부담 제한을 위해 표본 제한). 뚜렷한
-    패턴이 확인되면 구체적 파라미터 조정안을 changes로 반환한다 — 실제 적용은 여기서
-    하지 않고, 호출부가 tg.propose_tuning()으로 승인 버튼과 함께 보내서 사용자가 승인
-    누르거나 직접 요청할 때만 이뤄진다(자동 적용 없음)."""
-    import json as _json
-    from pathlib import Path as _Path
+# [2026-08-12 사용자요청] "순환매매로 전환한 뒤 전체 누적 승률/손익"을 30분 리포트에
+# 매번 포함시키기 위한 고정 기준시각. 이 시각 이후 진입한 봇 거래만 "순환매매 이후"로 집계한다.
+ROTATION_TRADING_START_TS = datetime(2026, 8, 11, 10, 53, 48).timestamp()
 
-    ledger_path = _Path(ledger_path)
-    now = time.time()
-    start = now - window_sec
+
+def _read_bot_ledger_rows(ledger_path, since_ts: float = 0.0) -> list[dict]:
+    """trade_ledger.jsonl에서 origin=bot(수동매매 제외)이고 entered_at >= since_ts인 행만 읽는다."""
+    import json as _json
+
     rows = []
     try:
         with open(ledger_path, encoding="utf-8") as f:
@@ -256,61 +251,113 @@ def analyze_recent_trade_review(ex: Exchange, cfg: Config, window_sec: float, le
                     continue
                 if r.get("origin", "bot") != "bot":
                     continue
-                if r["entered_at"] >= start:
+                if r.get("entered_at", 0) >= since_ts:
                     rows.append(r)
     except Exception:
-        return "복기용 거래 기록을 불러오지 못했어요.", {}
+        return []
+    return rows
+
+
+def _win_rate_pct(rows: list[dict]) -> float:
+    if not rows:
+        return 0.0
+    wins = sum(1 for r in rows if (r.get("estimated_pnl_usdt", 0) or 0) > 0)
+    return wins / len(rows) * 100
+
+
+def analyze_recent_trade_review(
+    ex: Exchange, cfg: Config, window_sec: float,
+    ledger_path: str = "logs/trade_ledger.jsonl", ws_restart_count: int = 0,
+) -> tuple[str, dict]:
+    """[2026-08-11/12 사용자요청] 30분마다 다음을 텔레그램으로 보고한다: (1) 최근 구간
+    총거래수/LONG/SHORT 진입수 (2) LONG/SHORT/전체 승률 (3) 최근 구간 손익(USDT)
+    (4) 최근 손실거래를 1분봉으로 재조회해 청산후15분 내 회복여부 확인(휩쏘성 조기청산
+    의심 시 조정안 제안) (5) 순환매매(ROTATION_TRADING_START_TS~) 전체 누적 승률/손익
+    (6) WS 재시작 횟수 + 하트비트(생존) 상태. 뚜렷한 패턴이 확인되면 구체적 파라미터
+    조정안을 changes로 반환한다 — 실제 적용은 여기서 하지 않고, 호출부가
+    tg.propose_tuning()으로 승인 버튼과 함께 보내서 사용자가 승인 누르거나 직접 요청할
+    때만 이뤄진다(자동 적용 없음)."""
+    from pathlib import Path as _Path
+
+    ledger_path = _Path(ledger_path)
+    now = time.time()
+    start = now - window_sec
+    rows = _read_bot_ledger_rows(ledger_path, since_ts=start)
+    changes: dict = {}
 
     if not rows:
-        return f"🔍 최근 {window_sec/60:.0f}분 복기 — 거래 없음", {}
+        recent_block = f"🔍 최근 {window_sec/60:.0f}분 복기 — 거래 없음"
+    else:
+        def pnl(r):
+            return r.get("estimated_pnl_usdt", 0) or 0
 
-    def pnl(r):
-        return r.get("estimated_pnl_usdt", 0) or 0
+        losses = [r for r in rows if pnl(r) <= 0]
+        net = sum(pnl(r) for r in rows)
+        win_rate = _win_rate_pct(rows)
+        long_rows = [r for r in rows if r.get("side") == "LONG"]
+        short_rows = [r for r in rows if r.get("side") == "SHORT"]
+        long_win_rate = _win_rate_pct(long_rows)
+        short_win_rate = _win_rate_pct(short_rows)
 
-    wins = [r for r in rows if pnl(r) > 0]
-    losses = [r for r in rows if pnl(r) <= 0]
-    net = sum(pnl(r) for r in rows)
-    win_rate = len(wins) / len(rows) * 100
-    long_rows = [r for r in rows if r.get("side") == "LONG"]
-    short_rows = [r for r in rows if r.get("side") == "SHORT"]
+        lines = [
+            f"🔍 최근 {window_sec/60:.0f}분 복기 — 총{len(rows)}건 (LONG {len(long_rows)}/SHORT {len(short_rows)})",
+            f"승률: LONG {long_win_rate:.0f}% / SHORT {short_win_rate:.0f}% / 전체 {win_rate:.0f}%",
+            f"손익: {net:+.2f}USDT",
+        ]
 
-    lines = [
-        f"🔍 최근 {window_sec/60:.0f}분 복기 — {len(rows)}건, 승률{win_rate:.0f}%, 순손익{net:+.2f}USDT",
-        f"LONG {len(long_rows)}건 / SHORT {len(short_rows)}건",
-    ]
-
-    sample_losses = sorted(losses, key=lambda r: r["entered_at"])[-5:]
-    recovered, checked = 0, 0
-    for trade in sample_losses:
-        try:
-            symbol, side = trade["symbol"], trade["side"]
-            entry_price, exited_at = trade["entry_price"], trade["exited_at"]
-            raw = ex.client.futures_klines(
-                symbol=symbol, interval="1m",
-                startTime=int(exited_at * 1000), endTime=int((exited_at + 900) * 1000), limit=20,
-            )
-            if not raw:
+        sample_losses = sorted(losses, key=lambda r: r["entered_at"])[-5:]
+        recovered, checked = 0, 0
+        for trade in sample_losses:
+            try:
+                symbol, side = trade["symbol"], trade["side"]
+                entry_price, exited_at = trade["entry_price"], trade["exited_at"]
+                raw = ex.client.futures_klines(
+                    symbol=symbol, interval="1m",
+                    startTime=int(exited_at * 1000), endTime=int((exited_at + 900) * 1000), limit=20,
+                )
+                if not raw:
+                    continue
+                checked += 1
+                if side == "LONG":
+                    if max(float(k[2]) for k in raw) > entry_price:
+                        recovered += 1
+                else:
+                    if min(float(k[3]) for k in raw) < entry_price:
+                        recovered += 1
+            except Exception:
                 continue
-            checked += 1
-            if side == "LONG":
-                if max(float(k[2]) for k in raw) > entry_price:
-                    recovered += 1
-            else:
-                if min(float(k[3]) for k in raw) < entry_price:
-                    recovered += 1
-        except Exception:
-            continue
 
-    changes = {}
-    if losses:
-        avg_loss = sum(pnl(r) for r in losses) / len(losses)
-        lines.append(f"손실 {len(losses)}건 평균 {avg_loss:+.3f}USDT")
-    if checked >= 3 and recovered / checked >= 0.6:
-        lines.append(f"⚠️ 손실 {checked}건 중 {recovered}건이 청산 후 15분 내 가격 회복 — 휩쏘성 조기청산 의심")
-        lines.append("제안: 진입직후 손절 유예 확장배수를 한 단계 더 넓히기")
-        changes["STOP_LOSS_GRACE_WIDEN_MULT"] = round(min(3.0, cfg.stop_loss_grace_widen_mult + 0.25), 2)
+        if losses:
+            avg_loss = sum(pnl(r) for r in losses) / len(losses)
+            lines.append(f"손실 {len(losses)}건 평균 {avg_loss:+.3f}USDT")
+        if checked >= 3 and recovered / checked >= 0.6:
+            lines.append(f"⚠️ 손실 {checked}건 중 {recovered}건이 청산 후 15분 내 가격 회복 — 휩쏘성 조기청산 의심")
+            lines.append("제안: 진입직후 손절 유예 확장배수를 한 단계 더 넓히기")
+            changes["STOP_LOSS_GRACE_WIDEN_MULT"] = round(min(3.0, cfg.stop_loss_grace_widen_mult + 0.25), 2)
+        elif checked > 0:
+            lines.append(f"손실 {checked}건 중 {recovered}건 회복 — 개선 필요 뚜렷하지 않음")
 
-    diagnosis = "\n".join(lines)
+        recent_block = "\n".join(lines)
+
+    # (5) 순환매매 전체 누적
+    rotation_rows = _read_bot_ledger_rows(ledger_path, since_ts=ROTATION_TRADING_START_TS)
+    if rotation_rows:
+        rotation_net = sum((r.get("estimated_pnl_usdt", 0) or 0) for r in rotation_rows)
+        rotation_wr = _win_rate_pct(rotation_rows)
+        rotation_line = f"📊 순환매매 누적({len(rotation_rows)}건): 승률 {rotation_wr:.0f}%, 손익 {rotation_net:+.2f}USDT"
+    else:
+        rotation_line = "📊 순환매매 누적: 기록 없음"
+
+    # (6) WS 재시작 + 하트비트
+    heartbeat_age = None
+    try:
+        heartbeat_age = time.time() - float(HEARTBEAT_PATH.read_text(encoding="utf-8").strip())
+    except Exception:
+        pass
+    hb_status = "정상" if (heartbeat_age is not None and heartbeat_age < 120) else "확인필요"
+    health_line = f"⚙️ WS 재시작 {ws_restart_count}회 / 하트비트 {hb_status}"
+
+    diagnosis = "\n\n".join([recent_block, rotation_line, health_line])
     return diagnosis, changes
 
 
@@ -532,6 +579,13 @@ def compute_min_margin(balance: float, cfg: Config) -> float:
     if balance < cfg.aggressive_balance_threshold:
         return cfg.aggressive_min_margin_usdt
     return cfg.min_margin_usdt
+
+
+def is_critical_balance_stop(balance: float, cfg: Config) -> bool:
+    """[2026-08-12 사용자요청] 절대 하한선(기본 5달러) 밑이면 저잔고 복구모드의 "고확률
+    후보 허용" 예외도 없이 신규 진입을 완전히 차단한다. 기존 포지션 관리(손절/익절/트레일링)는
+    이 함수와 무관하게 계속된다."""
+    return cfg.critical_balance_stop_usdt > 0 and balance <= cfg.critical_balance_stop_usdt
 
 
 def should_pause_new_entries_for_low_balance(balance: float, cfg: Config) -> bool:
@@ -2143,6 +2197,28 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
 
 def select_and_enter_best_candidates(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNotifier, total_balance: float, candidates: list[dict]):
     """이번 주기에 모인 진입 후보들 중 신호 강도가 가장 높은 것부터, 남은 슬롯만큼만 진입한다."""
+    # [2026-08-12 사용자요청] "자산이 5불만 남으면 거래 자체를 멈춰줘" — 저잔고 복구모드의
+    # "고확률 후보는 계속 진입" 예외도 없이, 이 절대 하한선 밑이면 신규 진입을 전부 차단한다.
+    # 기존 포지션의 손절/익절/트레일링 관리는 이 return과 무관하게 계속된다(포지션 방치 아님).
+    if is_critical_balance_stop(total_balance, cfg):
+        if not pm.critical_balance_stop_notified:
+            pm.critical_balance_stop_notified = True
+            log.critical(
+                "총자산 %.2f USDT가 절대 하한선 %.2f USDT 이하 — 신규 진입을 완전히 차단합니다 "
+                "(기존 포지션 관리는 계속됨)", total_balance, cfg.critical_balance_stop_usdt,
+            )
+            tg.send(
+                f"🛑 자산보호모드 진입: 총자산 {total_balance:.2f} USDT가 하한선 "
+                f"{cfg.critical_balance_stop_usdt:.2f} USDT 이하로 떨어져 신규 진입을 완전히 멈췄습니다.\n"
+                f"기존 보유 포지션의 손절/익절은 그대로 관리됩니다. 입금 등으로 잔고가 회복되면 자동으로 재개됩니다."
+            )
+        return
+    elif pm.critical_balance_stop_notified:
+        pm.critical_balance_stop_notified = False
+        log.info("총자산 %.2f USDT로 회복 — 절대 하한선(%.2f USDT) 위로 올라와 신규 진입 재개",
+                  total_balance, cfg.critical_balance_stop_usdt)
+        tg.send(f"✅ 자산보호모드 해제: 총자산 {total_balance:.2f} USDT로 회복되어 신규 진입을 재개합니다.")
+
     if not candidates or tg.trading_paused:
         return
     # [2026-08-11 사용자요청] 전체 연패 서킷브레이커 — daily_loss_limit_pct(하루 누적)와는
@@ -2488,6 +2564,9 @@ def main():
     last_btc_trend_at = 0.0  # 시작 직후 바로 한 번 보내지도록 0으로 초기화
     last_trade_review_at = time.time()
     last_symbol_refresh_at = time.time()
+    # [2026-08-12 사용자요청] 30분 모니터링에 "WS 재시작 횟수"를 포함시키기 위한 누적 카운터.
+    # analyze_recent_trade_review()가 보고할 때마다 0으로 리셋해서 "이번 구간" 값만 보여준다.
+    ws_restart_count_since_review = 0
     TIME_SYNC_INTERVAL_SEC = 1800  # 30분마다 서버 시간과 다시 맞춰서 오차 누적을 방지
     TUNE_INTERVAL_SEC = 3600  # 1시간마다 손익 분석 후 필요하면 텔레그램으로 조정 제안
     BTC_TREND_INTERVAL_SEC = 1800  # [2026-08-11 사용자요청] 30분마다 BTC 멀티타임프레임 흐름을 텔레그램으로 안내(참고용)
@@ -2530,6 +2609,7 @@ def main():
             # 문제 워커만 정리한 뒤 같은 역할/샤드 정보로 그 자리만 다시 띄운다.
             restart_reasons = {idx: ws_handles.get("last_restart_reasons", {}).get(idx, "unknown") for idx in restart_now}
             log.warning("WS 워커 %d개(idx=%s)가 응답불능/데이터끊김으로 판단돼 재시작합니다 — reasons=%s", len(restart_now), restart_now, restart_reasons)
+            ws_restart_count_since_review += len(restart_now)
             stop_ws_layer(ex, ws_handles, only_indices=restart_now)
             for idx in restart_now:
                 w = ws_handles["workers"][idx]
@@ -2619,7 +2699,11 @@ def main():
         if now - last_trade_review_at >= TRADE_REVIEW_INTERVAL_SEC:
             last_trade_review_at = now
             try:
-                diagnosis, changes = analyze_recent_trade_review(ex, cfg, TRADE_REVIEW_INTERVAL_SEC)
+                diagnosis, changes = analyze_recent_trade_review(
+                    ex, cfg, TRADE_REVIEW_INTERVAL_SEC,
+                    ws_restart_count=ws_restart_count_since_review,
+                )
+                ws_restart_count_since_review = 0
                 if changes:
                     tg.propose_tuning(diagnosis, changes)
                 else:
