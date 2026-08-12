@@ -17,6 +17,7 @@ def cfg() -> Config:
     c.small_profit_lock_balance_threshold = 0
     c.small_profit_balance_threshold = 0
     c.force_profit_exit_max_hold_min = 0.0
+    c.stop_loss_grace_sec = 0.0  # 이 테스트는 유예기간 없이 기본폭 자체를 검증(유예는 별도 테스트파일)
     return c
 
 

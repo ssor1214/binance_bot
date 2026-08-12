@@ -14,6 +14,7 @@ def cfg(**overrides):
     c = Config()
     c.average_down_enabled = True
     c.stop_loss_pct = 6.0
+    c.stop_loss_grace_sec = 0.0  # [2026-08-12] 유예기간 로직과 무관하게 기본폭 자체를 검증
     c.average_down_trigger_ratio = 0.5
     c.average_down_size_ratio = 0.045
     c.average_down_max_total_margin_ratio = 0.06

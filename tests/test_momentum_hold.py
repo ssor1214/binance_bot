@@ -16,6 +16,7 @@ from bot.strategy import is_momentum_continuing
 def cfg() -> Config:
     c = Config()
     c.stop_loss_pct = 6.0
+    c.stop_loss_grace_sec = 0.0  # [2026-08-12] 유예기간 로직과 무관하게 기본폭 자체를 검증
     c.take_profit_hard_cap = 20.0
     c.take_profit_min = 4.0
     c.short_take_profit_min = 4.0

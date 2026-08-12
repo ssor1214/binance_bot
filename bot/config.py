@@ -535,6 +535,13 @@ class Config:
     liquidity_size_full_usdt: float = _float("LIQUIDITY_SIZE_FULL_USDT", 2000.0)
     liquidity_size_min_mult: float = _float("LIQUIDITY_SIZE_MIN_MULT", 0.5)
 
+    # [2026-08-12 사용자요청] BTC정렬/방향성과/계좌방어/기대값방어/상관리스크 등 여러 방어
+    # 배율이 순차적으로 곱해지면서 겹칠 때, 개별로는 합리적인 배율들이 합쳐져 최종 비중이
+    # 0 근처까지 떨어져 "계산된 수량이 0 이하"로 진입 자체가 스킵되는 문제 실측(실거래
+    # 사후검증: 스킵된 80건을 진입시켰다고 가정 시 승률 80.8%). 아무리 배율이 겹쳐도
+    # 최초 비중(base_ratio_before_defense)의 이 비율 밑으로는 안 내려가도록 하한을 둔다.
+    defense_stack_min_ratio_mult: float = _float("DEFENSE_STACK_MIN_RATIO_MULT", 0.30)
+
     # 2봉 연속 확인: 신호가 처음 뜬 캔들 다음에도 같은 방향이 유지돼야 진입 (가짜 신호 필터)
     require_two_candle_confirmation: bool = _bool("REQUIRE_TWO_CANDLE_CONFIRMATION", "true")
 

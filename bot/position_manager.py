@@ -99,13 +99,23 @@ class PositionManager:
     - pnl이 -stop_loss_pct(-5%) 이하이면 즉시 손절.
     """
 
-    def _stop_loss_pct_for(self, side: str) -> float:
+    def _stop_loss_pct_for(self, side: str, entered_at: float | None = None) -> float:
         """[2026-08-11 사용자요청] SHORT만 손절폭을 따로 조이기 위한 헬퍼. SHORT_STOP_LOSS_PCT가
         0(기본값)이면 기존처럼 공용 stop_loss_pct를 쓰고, 양수면 SHORT 포지션에서만 그 값을
-        쓴다(LONG은 항상 공용 stop_loss_pct 그대로)."""
-        if side == "SHORT" and self.cfg.short_stop_loss_pct > 0:
-            return self.cfg.short_stop_loss_pct
-        return self.cfg.stop_loss_pct
+        쓴다(LONG은 항상 공용 stop_loss_pct 그대로).
+
+        [2026-08-12 실거래에서 발견/수정] 진입 직후 유예기간(STOP_LOSS_GRACE_SEC) 동안은
+        거래소 STOP_MARKET을 넓혀뒀는데, 이 폴링 기반 체크는 그걸 몰라서 좁은 기존 폭으로
+        먼저 손절을 발동시켜버려 유예기간이 사실상 무력화되는 사고가 있었다(ONEUSDT ROE
+        -3.04%에서 즉시청산, 원래 유예중이면 6%까지 버텼어야 함). bot/main.py의
+        compute_stop_loss_pct()와 동일한 유예 로직을 여기도 반영해서 두 경로가 항상 같은
+        기준을 쓰도록 맞춘다."""
+        base = self.cfg.short_stop_loss_pct if side == "SHORT" and self.cfg.short_stop_loss_pct > 0 else self.cfg.stop_loss_pct
+        if self.cfg.stop_loss_grace_sec <= 0 or entered_at is None:
+            return base
+        if (time.time() - entered_at) < self.cfg.stop_loss_grace_sec:
+            return base * self.cfg.stop_loss_grace_widen_mult
+        return base
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -489,7 +499,7 @@ class PositionManager:
         # 트랜치마다 더 깊은 지점에서 발동하도록 (N번째 추가는 손절폭의 trigger_ratio*N 지점).
         # 손절 경계(-stop_loss_pct) 자체를 절대 넘지 않도록 0.95배로 캡한다.
         depth_ratio = min(0.95, self.cfg.average_down_trigger_ratio * (pos.average_down_count + 1))
-        side_stop_loss_pct = self._stop_loss_pct_for(pos.side)
+        side_stop_loss_pct = self._stop_loss_pct_for(pos.side, pos.entered_at)
         trigger_roe = -side_stop_loss_pct * depth_ratio
         return trigger_roe >= roe > -side_stop_loss_pct
 
@@ -536,7 +546,7 @@ class PositionManager:
         pnl = pnl_pct(pos.entry_price, mark_price, pos.side)
         roe = pnl * pos.leverage
         margin_used = (pos.entry_price * pos.quantity) / pos.leverage if pos.leverage else pos.entry_price * pos.quantity
-        side_stop_loss_pct = self._stop_loss_pct_for(pos.side)
+        side_stop_loss_pct = self._stop_loss_pct_for(pos.side, pos.entered_at)
 
         if roe <= -side_stop_loss_pct:
             log.info("[%s] 손절 조건 충족: ROE=%.2f%% (가격변동=%.2f%%, 레버리지=%sx)", symbol, roe, pnl, pos.leverage)

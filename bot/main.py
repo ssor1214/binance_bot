@@ -1957,6 +1957,20 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
             )
         ratio *= liquidity_mult
 
+    # [2026-08-12 사용자요청] "방어배율이 곱셈으로 겹쳐서 수량이 0이 돼 스킵되는" 문제 —
+    # 실측: 오늘 이렇게 스킵된 80건을 진입시켰다고 가정하고 1분봉으로 재현한 결과 승률
+    # 80.8%(59승14패, 20분내 TP/SL 선착 기준)로 확인돼, 개별 방어 로직들은 각각 합리적이어도
+    # 여러 개가 동시에 겹치면 좋은 신호까지 통째로 놓치는 게 더 큰 손해로 판단. 아무리 겹쳐도
+    # 최초 비중(base_ratio_before_defense)의 이 비율 밑으로는 안 내려가도록 하한을 둔다.
+    if base_ratio_before_defense > 0:
+        floor_ratio = base_ratio_before_defense * cfg.defense_stack_min_ratio_mult
+        if 0 < ratio < floor_ratio:
+            log.info(
+                "[%s] 방어배율 누적으로 비중이 하한(%.0f%%) 밑으로 내려가 하한 적용: %.2f%% -> %.2f%%",
+                symbol, cfg.defense_stack_min_ratio_mult * 100, ratio * 100, floor_ratio * 100,
+            )
+            ratio = floor_ratio
+
     # [2026-08-09] 계좌 소진 방지 강화 요청으로 기본 마진 타입을 교차(CROSS)->격리(ISOLATED)로
     # 전환. 교차는 한 포지션의 손실이 계좌 전체 증거금을 갉아먹을 수 있는데, 격리는 그 포지션의
     # 증거금으로만 손실이 제한된다("고래성 코인"에만 강제하던 걸 전체로 확대). 레버리지는
