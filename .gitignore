@@ -34,3 +34,10 @@ tools/
 qa_ws_user_stream_isolated/
 qa_ws_watchdog_isolated/
 .venv312.tmp/
+
+# [2026-08-12 배포정리] 루트에 일회성 분석용 scratch_*.py/json이 반복적으로 쌓여 저장소가
+# 비대해지는 문제(scratch_klines_v4.json 41MB 등)가 있었다. 앞으로 일회성 조사는 커밋하지
+# 않는 게 기본이며, 계속 재사용할 도구만 이름을 정해 scripts/에 넣고 추적한다
+# (scripts/postmortem.py, scripts/analyze_trade_ledger.py 등).
+/scratch_*.py
+/scratch_*.json

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bot.config import Config
 from bot.main import (
     assess_short_reversal_risk,
+    passes_entry_range_position_filter,
     passes_one_min_noise_filter,
     passes_short_scalp_reversal_filter,
     passes_whipsaw_volatility_filter,
@@ -132,6 +133,68 @@ class WhipsawFilterTests(unittest.TestCase):
         ex = FakeExchange(df)
 
         self.assertTrue(passes_short_scalp_reversal_filter(ex, cfg, "EPICUSDT"))
+
+
+    def test_entry_range_position_blocks_long_chasing_top(self):
+        """[2026-08-12 사용자요청] 직전20분 범위 상단 근처(꼭대기 추격)에서 LONG 진입을 막는다."""
+        cfg = Config()
+        cfg.entry_range_position_lookback_min = 3
+        cfg.entry_range_position_max_pct = 70.0
+        # 직전 3분 범위 [100, 110], 마지막 종가 109 -> 위치 90% (상단 근접)
+        df = pd.DataFrame([
+            {"open": 100.0, "high": 105.0, "low": 100.0, "close": 103.0},
+            {"open": 103.0, "high": 110.0, "low": 102.0, "close": 108.0},
+            {"open": 108.0, "high": 109.5, "low": 107.0, "close": 109.0},
+        ])
+        ex = FakeExchange(df)
+        self.assertFalse(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
+
+    def test_entry_range_position_allows_long_near_low(self):
+        """범위 하단 근처(눌림목 재진입)면 LONG 진입을 허용한다."""
+        cfg = Config()
+        cfg.entry_range_position_lookback_min = 3
+        cfg.entry_range_position_max_pct = 70.0
+        # 직전 3분 범위 [100, 110], 마지막 종가 103 -> 위치 30%
+        df = pd.DataFrame([
+            {"open": 108.0, "high": 110.0, "low": 107.0, "close": 108.0},
+            {"open": 108.0, "high": 108.5, "low": 102.0, "close": 104.0},
+            {"open": 104.0, "high": 105.0, "low": 100.0, "close": 103.0},
+        ])
+        ex = FakeExchange(df)
+        self.assertTrue(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
+
+    def test_entry_range_position_blocks_short_chasing_bottom(self):
+        """SHORT는 대칭적으로 범위 하단 근처(바닥 추격매도)를 막는다."""
+        cfg = Config()
+        cfg.entry_range_position_lookback_min = 3
+        cfg.entry_range_position_max_pct = 70.0
+        # 직전 3분 범위 [100, 110], 마지막 종가 101 -> 위치 10% (하단 근접, 임계값 100-70=30% 미만)
+        df = pd.DataFrame([
+            {"open": 108.0, "high": 110.0, "low": 107.0, "close": 108.0},
+            {"open": 108.0, "high": 108.5, "low": 102.0, "close": 104.0},
+            {"open": 104.0, "high": 105.0, "low": 100.0, "close": 101.0},
+        ])
+        ex = FakeExchange(df)
+        self.assertFalse(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "SHORT"))
+
+    def test_entry_range_position_disabled_passthrough(self):
+        cfg = Config()
+        cfg.entry_range_position_filter_enabled = False
+        cfg.entry_range_position_lookback_min = 3
+        df = pd.DataFrame([
+            {"open": 100.0, "high": 105.0, "low": 100.0, "close": 103.0},
+            {"open": 103.0, "high": 110.0, "low": 102.0, "close": 108.0},
+            {"open": 108.0, "high": 109.5, "low": 107.0, "close": 109.0},
+        ])
+        ex = FakeExchange(df)
+        self.assertTrue(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
+
+    def test_entry_range_position_neutral_on_insufficient_data(self):
+        cfg = Config()
+        cfg.entry_range_position_lookback_min = 20
+        df = pd.DataFrame([{"open": 100.0, "high": 105.0, "low": 100.0, "close": 104.9}])
+        ex = FakeExchange(df)
+        self.assertTrue(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
 
 
 if __name__ == "__main__":

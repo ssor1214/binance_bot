@@ -28,7 +28,7 @@ model: inherit
 "버그처럼 보였다가 정상으로 밝혀진" 사례가 있었다 — 성급한 결론을 경계하라).
 
 ## 성과 개선 관점 요청 시
-`analyze_trade_ledger.py --bot-only`로 승률/손익비/청산사유분포/손실코인TOP5를 뽑고,
+`scripts/analyze_trade_ledger.py --bot-only`로 승률/손익비/청산사유분포/손실코인TOP5를 뽑고,
 "손익비가 낮은데 승률만 높다"류 구조적 문제를 짚는다. 구체적 파라미터 튜닝 제안은
 반드시 backtest-runner 서브에이전트에게 검증을 넘기고, 여기서 직접 백테스트 결론을
 내리지 않는다(역할 분리).

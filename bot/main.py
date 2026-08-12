@@ -657,6 +657,36 @@ def passes_one_min_noise_filter(ex: Exchange, cfg: Config, symbol: str, side: st
         return True
 
 
+def passes_entry_range_position_filter(ex: Exchange, cfg: Config, symbol: str, side: str) -> bool:
+    """[2026-08-12 사용자요청] "순환매매를 하려는데 돌파매매(꼭대기 추격)가 된다"는 실거래
+    문제 확인 — 최근1시간 LONG진입가가 직전20분 가격범위의 60~94%(거의 꼭대기)에 몰려
+    있었고, 진입위치 70%미만 유지시 4시간 손익 -1.99USDT vs 70%이상 포함시 -4.95USDT로
+    필터 적용시 손실이 약 71% 줄어드는 걸 간단검증으로 확인했다. 진입 시점 가격이 최근
+    N분(기본 20분) 범위에서 이미 상단(LONG)/하단(SHORT) 가까이 와있으면(추격매수/매도)
+    막는다. 데이터 부족/오류 시엔 넓은 필터 킬이 되지 않도록 통과시킨다."""
+    if not getattr(cfg, "entry_range_position_filter_enabled", True):
+        return True
+    try:
+        df_1m = ex.get_klines(symbol, interval="1m")
+        lookback = getattr(cfg, "entry_range_position_lookback_min", 20)
+        if len(df_1m) < lookback:
+            return True
+        window = df_1m.tail(lookback)
+        hi, lo = float(window["high"].max()), float(window["low"].min())
+        if hi <= lo:
+            return True
+        close = float(df_1m.iloc[-1]["close"])
+        pos_pct = (close - lo) / (hi - lo) * 100
+        max_pct = getattr(cfg, "entry_range_position_max_pct", 70.0)
+        if side == "LONG" and pos_pct > max_pct:
+            return False
+        if side == "SHORT" and pos_pct < (100 - max_pct):
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def passes_short_scalp_reversal_filter(ex: Exchange, cfg: Config, symbol: str) -> bool:
     """Block SHORT scalp entries after a 1m intrabar bounce from the low.
 
@@ -1668,6 +1698,9 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
         return None
 
     if signal == "SHORT" and not passes_short_scalp_reversal_filter(ex, cfg, symbol):
+        return None
+
+    if not passes_entry_range_position_filter(ex, cfg, symbol, signal):
         return None
 
     # 이미 과열됐거나(볼린저 밴드 이탈), 지금 이 캔들이 반대 방향으로 마감 중이면

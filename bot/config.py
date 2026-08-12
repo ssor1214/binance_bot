@@ -542,6 +542,15 @@ class Config:
     # 최초 비중(base_ratio_before_defense)의 이 비율 밑으로는 안 내려가도록 하한을 둔다.
     defense_stack_min_ratio_mult: float = _float("DEFENSE_STACK_MIN_RATIO_MULT", 0.30)
 
+    # [2026-08-12 사용자요청] "순환매매를 하려는데 돌파매매(꼭대기 추격)가 되어 진입 직후
+    # 전부 -부터 시작한다"는 실거래 문제 확인. 최근1시간 LONG진입 실측: 진입가가 직전20분
+    # 가격범위의 60~94%(거의 꼭대기)에 몰려있었음. 4시간 표본 간단검증: 진입위치 70%미만
+    # 유지시 손익 -1.99USDT, 70%이상(꼭대기추격) 포함시 -4.95USDT — 필터 적용시 손실 약
+    # 71% 감소 확인 후 적용. LONG은 상단 근접(추격매수), SHORT는 하단 근접(추격매도)을 막는다.
+    entry_range_position_filter_enabled: bool = _bool("ENTRY_RANGE_POSITION_FILTER_ENABLED", "true")
+    entry_range_position_lookback_min: int = _int("ENTRY_RANGE_POSITION_LOOKBACK_MIN", 20)
+    entry_range_position_max_pct: float = _float("ENTRY_RANGE_POSITION_MAX_PCT", 70.0)
+
     # 2봉 연속 확인: 신호가 처음 뜬 캔들 다음에도 같은 방향이 유지돼야 진입 (가짜 신호 필터)
     require_two_candle_confirmation: bool = _bool("REQUIRE_TWO_CANDLE_CONFIRMATION", "true")
 
