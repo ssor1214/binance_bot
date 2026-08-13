@@ -1043,10 +1043,18 @@ def check_early_exit(ex: Exchange, pm: PositionManager, cfg: Config, symbol: str
     먼저 빠져나가야 하는지 판단한다. 다만 너무 자주 발동하면 수수료만 나가고 실익이
     없으므로, 손실이 최소 기준(early_exit_min_loss_roe, 기본 -1% ROE) 이상이고
     3가지 신호(EMA/MACD/RSI)가 전부 뒤집혔을 때만(reversal_min_votes) 발동한다.
-    이미 수익 중이거나, 이미 정식 손절 대상(evaluate가 처리)이면 관여하지 않는다."""
+    이미 수익 중이거나, 이미 정식 손절 대상(evaluate가 처리)이면 관여하지 않는다.
+
+    [2026-08-13 실거래 복기] 진입 후 early_exit_min_hold_sec(기본 120초) 이내에는 발동하지
+    않는다 — 실측: EARLY_EXIT/EXTERNAL_CLOSE_LOSS 21건 전부(100%) 청산후15분내 회복,
+    그중 52%가 진입 60초 이내 초단기 청산이었다. 진입 직후 1~2캔들짜리 노이즈를 추세전환
+    으로 오판하는 패턴으로 판단, 120초 가드 백테스트(13건)에서 85%가 가드기간 동안 정식
+    손절에 안 닿고 생존함을 확인 후 추가."""
     pos = pm.positions.get(symbol)
     if pos is None:
         return False
+    if cfg.early_exit_min_hold_sec > 0 and (time.time() - pos.entered_at) < cfg.early_exit_min_hold_sec:
+        return False  # 진입 직후 유예 — 노이즈성 반전 오판 방지
     mark_price = ex.get_mark_price(symbol)
     pnl = pnl_pct(pos.entry_price, mark_price, pos.side)
     if pnl >= 0:

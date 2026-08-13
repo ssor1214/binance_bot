@@ -266,6 +266,13 @@ class Config:
     # 조기 탈출은 손실이 최소 이만큼(ROE %)은 돼야 고려한다 (너무 작은 노이즈에 반응해
     # 수수료만 나가는 것을 방지)
     early_exit_min_loss_roe: float = _float("EARLY_EXIT_MIN_LOSS_ROE", 1.0)
+    # [2026-08-13 실거래 복기] 오늘 밤 EARLY_EXIT/EXTERNAL_CLOSE_LOSS 21건 전부(100%)가
+    # 청산 후 15분 내 가격이 회복됐고, 그중 52%(11/21)는 진입 60초 이내 초단기 청산이었다.
+    # 진입 직후 1~2캔들짜리 노이즈를 추세전환으로 오판하는 것으로 판단, 이 시간(초) 동안은
+    # EARLY_EXIT 발동 자체를 막는 가드 추가. 백테스트(13건, 120초 가드 시뮬레이션): 85%(11/13)가
+    # 가드기간 동안 정식손절에 안 닿고 생존, 나머지 2건은 가드가 없었어도 어차피 정식손절에
+    # 닿았을 케이스라 가드로 인한 추가 손실 확대 없음.
+    early_exit_min_hold_sec: float = _float("EARLY_EXIT_MIN_HOLD_SEC", 120.0)
     # [2026-08-04] 스캘핑 재설계 후: 손실이 깊지 않은데(-2% ROE 이내) 이 시간(분)을 넘기면
     # 방향성 없는 코인으로 보고 슬롯을 비운다 (무기한 정체로 회전율이 떨어지는 문제 방지)
     scalp_max_hold_minutes: float = _float("SCALP_MAX_HOLD_MINUTES", 90.0)
