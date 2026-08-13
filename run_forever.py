@@ -150,12 +150,25 @@ def run_and_watch() -> int:
             free_ram_if_low()
 
         age = heartbeat_age_sec(process_started_at=process_started_at)
+        # [2026-08-13] 사용자가 자는 동안 이 판정이 여러 차례(47분/51분/230분 실행 후) 오탐으로
+        # 확인됨 — bot.log엔 킬 직전까지 30~40초 간격으로 정상 스캔 로그가 계속 찍혀있어 실제로
+        # 멈춘 게 아니었다. 정확한 원인(heartbeat.txt 읽기 실패? 다른 값?)을 다음 발생 시 바로
+        # 알 수 있도록, 문턱의 60% 지점부터 원본 값을 남긴다.
+        if age is not None and age > HEARTBEAT_STALE_SEC * 0.6:
+            log(f"[진단] heartbeat_age={age:.0f}초 heartbeat_raw={heartbeat_timestamp()} process_started_at={process_started_at} now={time.time()}")
         if age is not None and age > HEARTBEAT_STALE_SEC:
             log(
                 f"하트비트가 {age:.0f}초 동안 갱신되지 않음 — bot.main이 응답불능 상태로 판단해 강제종료합니다 "
                 f"(pid={process.pid})"
             )
-            process.kill()
+            # [2026-08-13] process.kill()은 이 PID 하나만 죽이고 그 자식(bot.ws_worker 3개)은
+            # 정리 안 돼 고아로 남는 사고가 실측됨(밤새 여러 세대의 ws_worker 고아 축적, RAM
+            # 소모 지속). taskkill /T로 프로세스 트리 전체를 종료해 고아가 안 남게 한다.
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=15)
+            except Exception:
+                log("taskkill 실행 중 오류 — process.kill()로 폴백")
+                process.kill()
             try:
                 process.wait(timeout=10)
             except Exception:
