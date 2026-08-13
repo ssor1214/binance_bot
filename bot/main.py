@@ -639,7 +639,7 @@ def compute_aggregate_worst_case_loss_pct(pm: PositionManager, total_balance: fl
     if total_balance <= 0:
         return 0.0
     total_worst_case_loss_usdt = 0.0
-    for pos in pm.positions.values():
+    for pos in list(pm.positions.values()):
         leverage = pos.leverage or 1.0
         margin_used = abs(pos.entry_price * pos.quantity) / leverage
         # 이 함수는 심볼별 실제 stop_loss_pct(전역 cfg 값)를 모르므로 호출부에서 곱해서 넘기지
@@ -669,13 +669,21 @@ def compute_stop_loss_pct(cfg: Config, side: str, entered_at: float | None = Non
     return base, False
 
 
-def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str, side: str) -> bool:
+def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str, side: str, leverage: float = 4.0) -> bool:
     """Skip entries when 5m volatility is too small OR too large relative to the stop width.
 
     [2026-08-11 사용자요청] 기존엔 하한선(변동성이 너무 작으면 스킵)만 있었다 — 실측 결과
     SHORT 손절의 39%가 진입 1분 이내(순수 STOP_LOSS 중앙값 1.84분)에 발생, LONG은 거의
     없었던 것과 대비돼(중앙값 4.55분, 1분내 0건) 휩쏘(노이즈가 손절폭보다 커서 방향과
-    무관하게 스탑에 스치는 현상)로 판단, 상한선을 추가했다."""
+    무관하게 스탑에 스치는 현상)로 판단, 상한선을 추가했다.
+
+    [2026-08-13 감사수정] stop_dist_pct(가격 기준 손절폭)는 ROE 기준 stop_loss_pct를
+    실제 레버리지로 나눠야 한다. 예전엔 항상 4.0(구 기본 레버리지)으로 나눠서, 신호강도로
+    동적 결정되는 실제 레버리지(leverage_min~leverage_max, 기본 3~5)가 3이면 필터가
+    허용하는 변동성 상/하한을 실제보다 25% 낮게(더 타이트), 5면 25% 높게(더 느슨하게)
+    오판했다. 호출부(scan_entry_candidate)에서 신호강도 기반 strength를 먼저 계산해
+    compute_leverage(strength, cfg)로 얻은 실제 레버리지를 넘겨받는다. leverage 인자를
+    생략(레거시 호출/테스트)하면 기존과 동일하게 4.0을 쓴다."""
     try:
         df_5m = ex.get_klines(symbol, interval="5m")
         df_5m = add_indicators(df_5m, cfg)
@@ -685,7 +693,7 @@ def passes_whipsaw_volatility_filter(ex: Exchange, cfg: Config, symbol: str, sid
         atr_pct_5m = (curr_5m["atr"] / curr_5m["close"]) * 100
         # 진입 전 필터라 유예기간(그라운드 확장)은 여기 반영하지 않는다 — SHORT전용값만 반영.
         base_stop_loss_pct = cfg.short_stop_loss_pct if side == "SHORT" and cfg.short_stop_loss_pct > 0 else cfg.stop_loss_pct
-        stop_dist_pct = base_stop_loss_pct / 4.0  # current default leverage anchor
+        stop_dist_pct = base_stop_loss_pct / max(leverage, 1.0)  # 실제(신호강도 기반) 레버리지 사용
         if atr_pct_5m < stop_dist_pct * cfg.min_atr_vs_stop_ratio:
             return False
         if cfg.max_atr_vs_stop_ratio > 0 and atr_pct_5m > stop_dist_pct * cfg.max_atr_vs_stop_ratio:
@@ -1802,7 +1810,11 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     if probability < required_probability:
         return None
 
-    if not passes_whipsaw_volatility_filter(ex, cfg, symbol, signal):
+    # [2026-08-13 감사수정] whipsaw 필터가 실제(신호강도 기반) 레버리지를 쓰도록 strength를
+    # 여기서 먼저 계산한다 (signal_strength는 df/cfg만 필요해 이 시점에 이미 계산 가능).
+    strength = signal_strength(df, cfg)
+    entry_leverage = compute_leverage(strength, cfg)
+    if not passes_whipsaw_volatility_filter(ex, cfg, symbol, signal, leverage=entry_leverage):
         return None
 
     if not passes_one_min_noise_filter(ex, cfg, symbol, signal):
@@ -1833,7 +1845,6 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     if not volume_direction_ok(df, signal, cfg):
         return None
 
-    strength = signal_strength(df, cfg)
     speed = quick_profit_score(df, cfg, signal)
     btc_mult = btc_alignment_multiplier(ex, cfg, signal)
 

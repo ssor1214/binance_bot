@@ -85,6 +85,33 @@ class WhipsawFilterTests(unittest.TestCase):
             self.assertTrue(passes_whipsaw_volatility_filter(ex, cfg, "EPICUSDT", "LONG"))
             self.assertFalse(passes_whipsaw_volatility_filter(ex, cfg, "EPICUSDT", "SHORT"))
 
+    def test_uses_actual_leverage_not_hardcoded_four(self):
+        """[2026-08-13 감사수정] 레버리지가 4가 아니면 stop_dist_pct가 달라져야 한다."""
+        cfg = Config()
+        cfg.stop_loss_pct = 5.0
+        cfg.min_atr_vs_stop_ratio = 0.8
+        cfg.max_atr_vs_stop_ratio = 4.0
+        # leverage=4 -> stop_dist=1.25%, 상한=5.0%. leverage=3 -> stop_dist=1.667%, 상한=6.667%.
+        # ATR 6.0%는 4배 기준으론 상한 초과(차단)지만 3배 기준으론 상한 이내(통과)여야 한다.
+        ex = FakeExchange(make_df(100.0, 6.0))
+        with patch("bot.main.add_indicators", lambda df, cfg: df):
+            self.assertFalse(
+                passes_whipsaw_volatility_filter(ex, cfg, "EPICUSDT", "LONG", leverage=4.0)
+            )
+            self.assertTrue(
+                passes_whipsaw_volatility_filter(ex, cfg, "EPICUSDT", "LONG", leverage=3.0)
+            )
+
+    def test_leverage_defaults_to_four_when_omitted(self):
+        """레거시 호출(레버리지 인자 생략)은 기존과 동일하게 4.0을 써야 한다."""
+        cfg = Config()
+        cfg.stop_loss_pct = 5.0
+        cfg.min_atr_vs_stop_ratio = 0.8
+        cfg.max_atr_vs_stop_ratio = 4.0
+        ex = FakeExchange(make_df(100.0, 6.0))
+        with patch("bot.main.add_indicators", lambda df, cfg: df):
+            self.assertFalse(passes_whipsaw_volatility_filter(ex, cfg, "EPICUSDT", "LONG"))
+
     def test_neutral_on_bad_data(self):
         cfg = Config()
         cfg.stop_loss_pct = 5.0

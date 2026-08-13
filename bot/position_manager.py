@@ -258,7 +258,12 @@ class PositionManager:
             "pnl_usdt": pnl_usdt,
         })
         self.recent_trade_results = self.recent_trade_results[-100:]
-        if pnl_pct_value > 0:
+        # [2026-08-14 정확성감사] 승/패 판정을 gross 가격변동률(pnl_pct_value)이 아니라
+        # net 손익(pnl_usdt, 수수료 반영)으로 바꿈 — 가격변동이 0~수수료율 사이일 때
+        # gross로는 승리인데 실제로는 손실인 거래가 "승리"로 카운트되어 연속손실
+        # 서킷브레이커/심볼 블랙리스트 발동을 지연·누락시키는 걸 실측으로 확인함(항상
+        # 보호가 느슨해지는 방향으로만 편향). main.py의 다른 통계 집계는 이미 net 기준.
+        if pnl_usdt > 0:
             self.wins += 1
             if side == "LONG":
                 self.long_wins += 1
