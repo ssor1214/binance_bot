@@ -558,6 +558,21 @@ def compute_max_positions(balance: float, cfg: Config) -> int:
     return max(1, min(cfg.max_positions_low, positions))
 
 
+def compute_large_balance_ratio_cap(balance: float, cfg: Config) -> float | None:
+    """[2026-08-13 사용자요청] 복리로 잔고가 커지면 비중(%)은 그대로라 포지션당 달러
+    리스크가 계속 커지는 문제 — 잔고 구간이 딱 문턱을 "초과"하면 비중 상한을 단계적으로
+    낮춘다(300 초과 15%, 500 초과 12%, 1000 초과 10%). 손실로 다시 문턱 밑으로 내려가면
+    스티키 없이 즉시 그 구간 기준으로 되돌아간다 — 매 진입마다 그 시점 잔고로 실시간 판단.
+    300 이하면 이 캡을 적용하지 않는다(None 반환, 호출부가 기존 position_size_max 사용)."""
+    if balance > cfg.large_balance_tier3_threshold:
+        return cfg.large_balance_tier3_max_ratio
+    if balance > cfg.large_balance_tier2_threshold:
+        return cfg.large_balance_tier2_max_ratio
+    if balance > cfg.large_balance_tier1_threshold:
+        return cfg.large_balance_tier1_max_ratio
+    return None
+
+
 def compute_min_confirmations(balance: float, cfg: Config) -> int:
     """자금이 aggressive_balance_threshold(기본 100 USDT) 미만이면 진입 기준을
     살짝 낮춰(기본 3/6) 초기 자금을 더 적극적으로 불려나가고, 그 이상이면
@@ -1974,7 +1989,11 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
     # (오히려 패배 건 평균확률 95.8%가 승리 건 94.3%보다 높게 나옴)이 확인됨 — 근거 없는 확률
     # 숫자로 비중을 75~100%까지 키우는 건 예측력 없는 신호로 리스크만 키우는 것이라 판단해
     # 확률 기반 비중 확대를 제거한다. 비중은 항상 연속승리 기반 기본 로직만 따른다.
-    max_ratio = cfg.small_balance_max_ratio if balance < cfg.small_balance_threshold else cfg.position_size_max
+    if balance < cfg.small_balance_threshold:
+        max_ratio = cfg.small_balance_max_ratio
+    else:
+        large_balance_cap = compute_large_balance_ratio_cap(balance, cfg)
+        max_ratio = large_balance_cap if large_balance_cap is not None else cfg.position_size_max
     base_ratio_before_defense = min(
         cfg.position_size_min + pm.win_streak * cfg.position_size_step,
         max_ratio,

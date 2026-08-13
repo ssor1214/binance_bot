@@ -122,6 +122,18 @@ class Config:
     position_size_step: float = _float("POSITION_SIZE_STEP", 0.1)
     small_balance_threshold: float = _float("SMALL_BALANCE_THRESHOLD", 100.0)
     small_balance_max_ratio: float = _float("SMALL_BALANCE_MAX_RATIO", 1.0)
+
+    # [2026-08-13 사용자요청] "복리로 자산이 커지면 비중(%)은 그대로라 달러 리스크만 계속
+    # 커지는 것 아니냐" — 잔고 구간이 딱 이 값을 "넘으면"(같으면 미포함, 초과부터) 비중
+    # 상한을 단계적으로 낮춘다. 손실로 다시 하한 밑으로 내려가면 즉시 그 구간 기준으로
+    # 되돌아간다(스티키 없음, 매 진입마다 그 시점 잔고로 실시간 판단). 300 미만 구간은
+    # 기존 position_size_max(19%) 그대로.
+    large_balance_tier1_threshold: float = _float("LARGE_BALANCE_TIER1_THRESHOLD", 300.0)
+    large_balance_tier1_max_ratio: float = _float("LARGE_BALANCE_TIER1_MAX_RATIO", 0.15)
+    large_balance_tier2_threshold: float = _float("LARGE_BALANCE_TIER2_THRESHOLD", 500.0)
+    large_balance_tier2_max_ratio: float = _float("LARGE_BALANCE_TIER2_MAX_RATIO", 0.12)
+    large_balance_tier3_threshold: float = _float("LARGE_BALANCE_TIER3_THRESHOLD", 1000.0)
+    large_balance_tier3_max_ratio: float = _float("LARGE_BALANCE_TIER3_MAX_RATIO", 0.10)
     # If the account has already fallen into survival mode, stop opening new
     # positions and keep managing only existing exposure.  Recovery mode below
     # re-opens only the strongest one-shot candidates so a tiny balance can

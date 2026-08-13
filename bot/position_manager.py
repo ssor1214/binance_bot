@@ -405,6 +405,22 @@ class PositionManager:
             )
         return mult
 
+    def _large_balance_ratio_cap(self, balance: float) -> float | None:
+        """[2026-08-13 사용자요청] 복리로 잔고가 커지면 비중(%)은 그대로라 포지션당 달러
+        리스크가 계속 커지는 문제 — 잔고 구간이 딱 문턱을 "초과"하면 비중 상한을 단계적으로
+        낮춘다(300 초과 15%, 500 초과 12%, 1000 초과 10%). 손실로 다시 문턱 밑으로 내려가면
+        스티키 없이 즉시 그 구간 기준으로 되돌아간다. bot/main.py의
+        compute_large_balance_ratio_cap()과 동일 로직(순환import 방지를 위해 여기서도
+        직접 구현) — 둘 중 하나를 고치면 반드시 같이 고칠 것."""
+        cfg = self.cfg
+        if balance > cfg.large_balance_tier3_threshold:
+            return cfg.large_balance_tier3_max_ratio
+        if balance > cfg.large_balance_tier2_threshold:
+            return cfg.large_balance_tier2_max_ratio
+        if balance > cfg.large_balance_tier1_threshold:
+            return cfg.large_balance_tier1_max_ratio
+        return None
+
     def next_position_size_ratio(self, balance: float, symbol: str | None = None) -> float:
         """연속 승리 횟수에 따라 비중을 키운다.
 
@@ -418,7 +434,11 @@ class PositionManager:
         진입한 기록이 있으면 그때 비중의 same_symbol_reentry_ratio_mult(기본 0.45=50% 미만)
         배 이하로 강제 축소한다. 재진입 자체는 막지 않는다(사용자 명시 요청).
         """
-        max_ratio = self.cfg.small_balance_max_ratio if balance < self.cfg.small_balance_threshold else self.cfg.position_size_max
+        if balance < self.cfg.small_balance_threshold:
+            max_ratio = self.cfg.small_balance_max_ratio
+        else:
+            large_balance_cap = self._large_balance_ratio_cap(balance)
+            max_ratio = large_balance_cap if large_balance_cap is not None else self.cfg.position_size_max
         ratio = self.cfg.position_size_min + self.win_streak * self.cfg.position_size_step
         ratio = min(ratio, max_ratio)
 
