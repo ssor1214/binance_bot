@@ -90,6 +90,17 @@ RESTART_DELAY_SEC = 5
 DUPLICATE_INSTANCE_EXIT_CODE = 78
 DUPLICATE_INSTANCE_RETRY_DELAY_SEC = 120
 
+# [2026-08-13 실측 사고] bot.main() 시작부(get_active_usdt_perpetual_symbols 등)의 REST 호출은
+# 예외처리가 없어, 바이낸스 IP밴(-1003) 같은 일시적 장애 중엔 기동하자마자 미처리 예외로 즉시
+# 죽는다. RESTART_DELAY_SEC=5초가 너무 짧아서 "기동->즉시크래시->5초 후 재기동->또 REST
+# 호출->밴 연장" 죽음의 루프가 됐고, 이게 IP밴 해제 시각을 계속 뒤로 밀어 20분 넘게 매매가
+# 끊긴 사고로 이어졌다(원인 조회 자체도 REST라 루프를 완전히 끄기 전엔 확인도 못 함).
+# 특정 REST 호출 하나만 예외처리하는 것보다 "짧게 산 재시작이 반복되면 대기시간을 지수적으로
+# 늘리는" 게 원인 불문 범용 방어라 이 방식을 택함. 정상 기동해서 오래 살아남으면(문턱 이상)
+# 바로 원래 대기시간으로 복귀한다.
+FAST_CRASH_THRESHOLD_MIN = 1.0  # 이보다 짧게 살고 죽으면 "급속 크래시"로 간주
+FAST_CRASH_BACKOFF_SEC = [5, 30, 60, 120, 300]  # 연속 급속크래시 횟수에 따라 순서대로 적용(마지막 값에서 고정)
+
 # [2026-08-10] 하트비트가 이만큼(초) 안 갱신되면 "멈췄다"고 판단해 강제종료한다. bot.main
 # 시작 직후(250심볼 스캔 등)에도 하트비트를 바로 남기므로 여유는 크게 안 둬도 되지만,
 # 일시적 GC/네트워크 지연 등으로 오탐하지 않도록 충분히 넉넉하게(5분) 잡는다.
@@ -178,8 +189,16 @@ def run_and_watch() -> int:
         time.sleep(HEARTBEAT_CHECK_INTERVAL_SEC)
 
 
+def compute_fast_crash_backoff_sec(streak: int) -> int:
+    """연속 급속크래시 횟수(streak, 이번 크래시 포함 전 카운트)에 따른 대기시간(초)을 반환한다.
+    FAST_CRASH_BACKOFF_SEC 테이블을 순서대로 쓰고, 범위를 넘으면 마지막 값에 고정된다."""
+    idx = min(max(streak, 0), len(FAST_CRASH_BACKOFF_SEC) - 1)
+    return FAST_CRASH_BACKOFF_SEC[idx]
+
+
 def main():
     log("=== 감시 스크립트 시작 ===")
+    fast_crash_streak = 0  # 연속으로 짧게 살고 죽은 횟수(지수 백오프 계산용)
     try:
         while True:
             log("bot.main 실행")
@@ -191,8 +210,19 @@ def main():
                     f"bot.main이 중복 인스턴스 감지로 종료됨 ({elapsed_min:.1f}분간 실행됨). "
                     f"다른 인스턴스와 재시작 경합을 피하기 위해 {DUPLICATE_INSTANCE_RETRY_DELAY_SEC}초 후 재시도합니다."
                 )
+                fast_crash_streak = 0  # 중복인스턴스는 별개 사유라 백오프 카운트에 안 넣음
                 time.sleep(DUPLICATE_INSTANCE_RETRY_DELAY_SEC)
+            elif elapsed_min < FAST_CRASH_THRESHOLD_MIN:
+                delay = compute_fast_crash_backoff_sec(fast_crash_streak)
+                fast_crash_streak += 1
+                log(
+                    f"bot.main이 {elapsed_min:.1f}분만에 종료됨(exit code={returncode}) — 급속 크래시 "
+                    f"{fast_crash_streak}회 연속. IP밴 등 일시적 장애가 재시작으로 계속 악화되는 걸 막기 "
+                    f"위해 {delay}초 대기 후 재시작합니다."
+                )
+                time.sleep(delay)
             else:
+                fast_crash_streak = 0
                 log(f"bot.main 종료됨 (exit code={returncode}, {elapsed_min:.1f}분간 실행됨). {RESTART_DELAY_SEC}초 후 재시작합니다.")
                 time.sleep(RESTART_DELAY_SEC)
     except KeyboardInterrupt:

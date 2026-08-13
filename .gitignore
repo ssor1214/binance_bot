@@ -41,3 +41,9 @@ qa_ws_watchdog_isolated/
 # (scripts/postmortem.py, scripts/analyze_trade_ledger.py 등).
 /scratch_*.py
 /scratch_*.json
+
+# [2026-08-13] 지금은 안 쓰지만 나중에 pytest/coverage/mypy 도입 시 실수로 커밋되는 걸
+# 막기 위한 방어적 항목(보험).
+.pytest_cache/
+.coverage
+.mypy_cache/

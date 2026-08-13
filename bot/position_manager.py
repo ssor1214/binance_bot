@@ -144,6 +144,10 @@ class PositionManager:
         self.total_balance: float = 0.0  # main.py가 매 사이클 갱신 (소액 구간 익절 기준 판단용)
         self.symbol_loss_streak: dict[str, int] = {}
         self.symbol_blacklist_until: dict[str, float] = {}
+        # [2026-08-13 사용자요청] 연속(스트릭) 손실과 별개로 "짧은 시간창 내 반복 손실"을
+        # 추적한다 — symbol -> 최근 손실 시각 리스트(윈도우 밖은 정리). 재시작 시 초기화되어도
+        # 창 자체가 짧아(기본 30분) 리스크가 작다고 판단해 별도 파일 영속화는 하지 않는다.
+        self.symbol_loss_timestamps: dict[str, list[float]] = {}
         # [2026-08-11 사용자요청] 심볼별 격리와 별개로, 봇 전체가 짧게 연속으로 지고 있으면
         # (장세 자체가 안 맞을 가능성) 신규 진입을 잠깐 전체 정지한다. win_streak과 달리
         # 이건 "이겼을 때"뿐 아니라 "심볼이 바뀌어도" 계속 누적되는 전역 카운터다.
@@ -302,6 +306,23 @@ class PositionManager:
                 log.warning(
                     "[%s] 연속 손실 %d회 — %.0f분 동안 이 심볼 신규 진입을 쉽니다",
                     symbol, streak, self.cfg.symbol_blacklist_cooldown_min,
+                )
+            # [2026-08-13 사용자요청] 동일 심볼에서 짧은 시간창(symbol_cooldown_window_min)
+            # 안에 손실이 symbol_cooldown_loss_count회 이상 나면, 연속손실 스트릭 조건과
+            # 무관하게(중간에 승리가 끼어 있어도) 그 심볼만 짧게(symbol_cooldown_block_min)
+            # 재진입을 차단한다. 기존 is_symbol_blacklisted() 게이트를 그대로 재사용한다.
+            now_ts = time.time()
+            window_sec = self.cfg.symbol_cooldown_window_min * 60
+            loss_ts = self.symbol_loss_timestamps.setdefault(symbol, [])
+            loss_ts.append(now_ts)
+            loss_ts[:] = [t for t in loss_ts if now_ts - t <= window_sec]
+            if len(loss_ts) >= self.cfg.symbol_cooldown_loss_count:
+                cooldown_until = now_ts + self.cfg.symbol_cooldown_block_min * 60
+                if cooldown_until > self.symbol_blacklist_until.get(symbol, 0):
+                    self.symbol_blacklist_until[symbol] = cooldown_until
+                log.warning(
+                    "[%s] %.0f분 내 손실 %d회 — %.0f분 동안 이 심볼 재진입을 짧게 차단합니다",
+                    symbol, self.cfg.symbol_cooldown_window_min, len(loss_ts), self.cfg.symbol_cooldown_block_min,
                 )
             actual_roe = abs(pnl_pct_value) * leverage
             if actual_roe >= self.cfg.stop_loss_pct * self.cfg.slippage_quarantine_multiplier:

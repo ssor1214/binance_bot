@@ -1,4 +1,5 @@
 ﻿import logging
+import json
 import os
 import sys
 import time
@@ -879,6 +880,39 @@ def compute_risk_based_position_size(
         notional = max_notional  # 리스크 기준으로 계산된 수량이 레버리지 한도를 넘으면 한도로 캡
     raw_qty = notional / price
     return ex.round_quantity(symbol, raw_qty, price=price, max_notional=max_notional)
+
+
+DAILY_BASELINE_OVERRIDE_PATH = Path("logs/daily_baseline_override.json")
+
+
+def load_daily_baseline_override(today: date, default_next_threshold: float, path: Path = DAILY_BASELINE_OVERRIDE_PATH) -> dict | None:
+    """[2026-08-13 사용자요청] "오늘 수익률/기준자산을 우리가 개선한 시점(예: 12:17 진입범위필터
+    수정)으로 리셋해줘" — 기본 동작(재시작/날짜변경 시 '지금' 시점으로 자동리셋, 아래
+    update_daily_checkpoint 참고)으로는 과거의 특정 시점을 기준으로 삼을 수 없다.
+    logs/daily_baseline_override.json에 {"date": "YYYY-MM-DD", "start_balance": ..,
+    "bot_pnl_start": ..}가 있고 date가 오늘과 일치하면 그 값을 daily_state 초기값으로 쓴다.
+    파일이 없거나 날짜가 안 맞거나(다음날이 되면 자동 무시) 형식이 깨졌으면 조용히 None을
+    반환해 기존 자동리셋 동작으로 폴백한다."""
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        log.warning("일일 기준자산 오버라이드 파일 파싱 실패 — 기본 동작으로 폴백")
+        return None
+    if data.get("date") != today.isoformat():
+        return None
+    if "start_balance" not in data or "bot_pnl_start" not in data:
+        return None
+    return {
+        "date": today,
+        "start_balance": float(data["start_balance"]),
+        "start_ms": int(data.get("start_ms", time.time() * 1000)),
+        "bot_pnl_start": float(data["bot_pnl_start"]),
+        "next_threshold": float(data.get("next_threshold", default_next_threshold)),
+        "checkpoint_count": int(data.get("checkpoint_count", 0)),
+        "loss_limit_triggered": bool(data.get("loss_limit_triggered", False)),
+    }
 
 
 def update_daily_checkpoint(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNotifier, daily_state: dict, total_balance: float):
@@ -1832,6 +1866,13 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     else:
         short_reversal_risk = {"risky": False, "reasons": []}
 
+    # [2026-08-13 사용자요청] 진입 신호가 나온 이 캔들 자체가 최근 평균 변동폭(ATR) 대비
+    # 비정상적으로 크면(chase_entry_range_mult배 이상) "소진성 스파이크" 추격진입일
+    # 위험이 있다 — 진입은 막지 않고 execute_entry에서 비중만 소폭 축소한다.
+    curr_row = df.iloc[-1]
+    candle_range = float(curr_row["high"]) - float(curr_row["low"])
+    atr_value = float(curr_row.get("atr", 0.0) or 0.0)
+    chase_entry = bool(atr_value > 0 and candle_range >= atr_value * cfg.chase_entry_range_mult)
     price = float(df.iloc[-1]["close"])
     candle_time = df.iloc[-1]["open_time"]
     # 진입 성공 확률(probability)을 최우선으로 반영하고, 신호 강도(strength)와
@@ -1851,6 +1892,7 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
         "price": price, "candle_time": candle_time, "whale_signal": whale_signal,
         "avg_quote_volume": avg_quote_volume,
         "btc_mult": btc_mult,
+        "chase_entry": chase_entry,
     }
 
 
@@ -2070,6 +2112,14 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
                 symbol, avg_quote_volume, liquidity_mult * 100,
             )
         ratio *= liquidity_mult
+
+    if candidate.get("chase_entry"):
+        chase_mult = max(0.0, min(1.0, cfg.chase_entry_size_mult))
+        ratio *= chase_mult
+        log.info(
+            "[%s] 진입캔들 변동폭이 평균 변동폭(ATR)의 %.1f배 이상(소진성 스파이크 의심) — 비중 %.0f%%로 소폭 축소",
+            symbol, cfg.chase_entry_range_mult, chase_mult * 100,
+        )
 
     # [2026-08-12 사용자요청] "방어배율이 곱셈으로 겹쳐서 수량이 0이 돼 스킵되는" 문제 —
     # 실측: 오늘 이렇게 스킵된 80건을 진입시켰다고 가정하고 1분봉으로 재현한 결과 승률
@@ -2580,7 +2630,14 @@ def main():
 
     sync_existing_positions(ex, pm)
 
-    daily_state = {"date": None, "start_balance": None, "next_threshold": None}
+    daily_state = load_daily_baseline_override(date.today(), cfg.daily_profit_target_pct)
+    if daily_state is not None:
+        log.info(
+            "일일 기준자산 오버라이드 적용: 기준자산=%.2fUSDT 시작시점봇누적손익=%.2fUSDT",
+            daily_state["start_balance"], daily_state["bot_pnl_start"],
+        )
+    else:
+        daily_state = {"date": None, "start_balance": None, "next_threshold": None}
     tg.daily_state = daily_state  # 텔레그램 "오늘 수익률" 버튼이 같은 dict를 참조하도록 연결
     pending_signals: dict = {}  # 2봉 연속 확인용 (심볼별 대기 중인 신호)
     hourly_seen_candidates: set = set()  # 1시간 동안 신호+확률 통과한 코인(실제 거래 여부 무관, 1시간마다 리셋)

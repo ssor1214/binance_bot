@@ -46,6 +46,7 @@ TUNABLE_PARAMS = {
     "MIN_ENTRY_PROBABILITY": ("min_entry_probability", float, 0.55, 0.90),
     "SHORT_MIN_ENTRY_PROBABILITY": ("short_min_entry_probability", float, 0.60, 0.92),
     "TAKER_IMBALANCE_THRESHOLD": ("taker_imbalance_threshold", float, 0.50, 0.65),
+    "SHORT_TAKER_IMBALANCE_THRESHOLD": ("short_taker_imbalance_threshold", float, 0.0, 0.65),
     "REQUIRE_TWO_CANDLE_CONFIRMATION": ("require_two_candle_confirmation", bool, None, None),
     "PROFIT_HOLD_REVERSAL_VOTES": ("profit_hold_reversal_votes", int, 1, 3),
     "STOP_LOSS_PCT": ("stop_loss_pct", float, 3.0, 6.0),
@@ -79,6 +80,7 @@ TUNABLE_PARAMS_KO = {
     "MIN_ENTRY_PROBABILITY": "롱 진입확률 최소기준",
     "SHORT_MIN_ENTRY_PROBABILITY": "숏 진입확률 최소기준",
     "TAKER_IMBALANCE_THRESHOLD": "매수/매도 체결 쏠림 기준",
+    "SHORT_TAKER_IMBALANCE_THRESHOLD": "숏 전용 체결 쏠림 기준(0=공용값 사용)",
     "REQUIRE_TWO_CANDLE_CONFIRMATION": "2봉 연속 확인 사용여부",
     "PROFIT_HOLD_REVERSAL_VOTES": "익절 구간 반전판단 표결수",
     "STOP_LOSS_PCT": "손절 기준(ROE %)",
@@ -519,6 +521,14 @@ class Config:
     # 따라서 1~2회 손실은 차단보다 "다음 진입 비중 축소"로 대응하고,
     # 실제 심볼 차단은 최소 3연속 손실부터 적용한다.
     symbol_blacklist_min_loss_streak: int = _int("SYMBOL_BLACKLIST_MIN_LOSS_STREAK", 3)
+    # [2026-08-13 사용자요청] 연속손실(스트릭) 기반 격리(symbol_blacklist_*)와 별개로,
+    # "짧은 시간 내 반복 손실"은 스트릭이 중간에 승리로 끊겨도 위험 신호일 수 있다 —
+    # 시간창(symbol_cooldown_window_min) 안에 손실이 symbol_cooldown_loss_count회 이상 나면
+    # 그보다 훨씬 짧게(symbol_cooldown_block_min) 그 심볼만 재진입을 차단한다. 기존
+    # is_symbol_blacklisted() 게이트를 그대로 재사용(symbol_blacklist_until에 같이 반영).
+    symbol_cooldown_loss_count: int = _int("SYMBOL_COOLDOWN_LOSS_COUNT", 2)
+    symbol_cooldown_window_min: float = _float("SYMBOL_COOLDOWN_WINDOW_MIN", 30.0)
+    symbol_cooldown_block_min: float = _float("SYMBOL_COOLDOWN_BLOCK_MIN", 10.0)
     loss_reentry_size_mult: float = _float("LOSS_REENTRY_SIZE_MULT", 0.55)
     loss_reentry_min_mult: float = _float("LOSS_REENTRY_MIN_MULT", 0.30)
     recent_performance_window: int = _int("RECENT_PERFORMANCE_WINDOW", 10)
@@ -547,6 +557,16 @@ class Config:
     # 테이커 매수 비율이 이 값 이상/이하로 확실히 한쪽으로 쏠려야 진입 (0.5=중립, 0.55면 매수우위 55%)
     taker_imbalance_threshold: float = _float("TAKER_IMBALANCE_THRESHOLD", 0.55)
 
+    # [2026-08-13] SHORT 전용 테이커 임계값 스위치 — offline_backtest 합성 스윕에서는
+    # SHORT taker_buy_ratio<=0.40 근처가 개선되는 것처럼 보였지만, 실거래 이벤트 리플레이
+    # (logs/trade_ledger.jsonl SHORT 457건, 실제 신호캔들 taker_buy_ratio 재구성) 검증 결과
+    # 전체 집계로는 방향성이 있으나(승률/PF 완만히 개선) 절대 EV가 모든 구간에서 여전히
+    # 음수이고, 시간순 절반검증(held-out)에서는 방향성조차 불안정(노이즈)해서 "명확한 개선"
+    # 기준을 충족하지 못해 보류 — 기본값 0.0(비활성, 공용 taker_imbalance_threshold 그대로
+    # 사용)로 둔다. 향후 표본이 더 쌓이면 재검증할 수 있도록 인프라만 남겨둔다.
+    # LONG은 taker_imbalance_threshold(0.55)를 그대로 쓴다 — 이 값을 절대 건드리지 않는다.
+    short_taker_imbalance_threshold: float = _float("SHORT_TAKER_IMBALANCE_THRESHOLD", 0.0)
+
     # 최근 캔들 평균 거래대금(USDT/분)이 이 값 미만이면 아예 후보에서 제외한다 (절대 유동성 하한선).
     # 상대적 거래량(자기 평균 대비)만으로는 원래부터 극도로 얇은 코인을 못 걸러낸다 — 실측 결과
     # PENGUSDT 같은 코인은 분당 $44 수준이라 캔들이 거의 안 움직여 진입해도 포지션이 정체됨.
@@ -560,6 +580,11 @@ class Config:
     # liquidity_size_min_mult까지 축소하고, liquidity_size_full_usdt 이상이면 비중 축소 없음(1.0배).
     liquidity_size_full_usdt: float = _float("LIQUIDITY_SIZE_FULL_USDT", 2000.0)
     liquidity_size_min_mult: float = _float("LIQUIDITY_SIZE_MIN_MULT", 0.5)
+
+    # [2026-08-13 사용자요청] 진입 직전 캔들이 최근 평균 변동폭(ATR) 대비 비정상적으로
+    # 크면("소진성 스파이크"일 위험) 진입 자체는 막지 않고 비중만 아주 소폭 축소한다.
+    chase_entry_range_mult: float = _float("CHASE_ENTRY_RANGE_MULT", 3.0)
+    chase_entry_size_mult: float = _float("CHASE_ENTRY_SIZE_MULT", 0.90)
 
     # [2026-08-12 사용자요청] BTC정렬/방향성과/계좌방어/기대값방어/상관리스크 등 여러 방어
     # 배율이 순차적으로 곱해지면서 겹칠 때, 개별로는 합리적인 배율들이 합쳐져 최종 비중이

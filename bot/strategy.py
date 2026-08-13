@@ -245,7 +245,9 @@ def volume_direction_ok(df: pd.DataFrame, side: str, cfg: Config) -> bool:
     ratio = curr["taker_buy_ratio"]
     if side == "LONG":
         return bool(ratio >= cfg.taker_imbalance_threshold)
-    return bool(ratio <= 1 - cfg.taker_imbalance_threshold)
+    # SHORT 전용 임계값이 설정돼 있으면(>0) 그걸 쓰고, 아니면 공용값을 그대로 쓴다.
+    threshold = getattr(cfg, "short_taker_imbalance_threshold", 0.0) or cfg.taker_imbalance_threshold
+    return bool(ratio <= 1 - threshold)
 
 
 def quick_profit_score(df: pd.DataFrame, cfg: Config, side: str) -> float:

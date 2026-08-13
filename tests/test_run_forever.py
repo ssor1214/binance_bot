@@ -65,5 +65,36 @@ class SupervisorRamAutoRecoveryTests(unittest.TestCase):
                 self.assertNotIn(forbidden.lower(), name.lower())
 
 
+class FastCrashBackoffTests(unittest.TestCase):
+    """[2026-08-13] IP밴 중 급속 재시작이 밴을 계속 연장시키던 사고 재발방지 검증."""
+
+    def test_backoff_follows_table_in_order(self):
+        for streak, expected in enumerate(run_forever.FAST_CRASH_BACKOFF_SEC):
+            self.assertEqual(run_forever.compute_fast_crash_backoff_sec(streak), expected)
+
+    def test_backoff_clamps_to_last_value_beyond_table_length(self):
+        far_beyond = len(run_forever.FAST_CRASH_BACKOFF_SEC) + 10
+        self.assertEqual(
+            run_forever.compute_fast_crash_backoff_sec(far_beyond),
+            run_forever.FAST_CRASH_BACKOFF_SEC[-1],
+        )
+
+    def test_backoff_never_negative_for_negative_streak(self):
+        # streak은 항상 0 이상으로만 호출되지만, 방어적으로 음수가 들어와도 첫 값으로 클램프.
+        self.assertEqual(
+            run_forever.compute_fast_crash_backoff_sec(-5),
+            run_forever.FAST_CRASH_BACKOFF_SEC[0],
+        )
+
+    def test_backoff_table_strictly_increasing(self):
+        table = run_forever.FAST_CRASH_BACKOFF_SEC
+        self.assertTrue(all(table[i] < table[i + 1] for i in range(len(table) - 1)))
+
+    def test_first_backoff_matches_normal_restart_delay(self):
+        """첫 크래시는 지금까지와 동일하게 즉각 재시도(RESTART_DELAY_SEC)해야 정상 일시적
+        오류(네트워크 순간 끊김 등)에서 불필요하게 느려지지 않는다."""
+        self.assertEqual(run_forever.FAST_CRASH_BACKOFF_SEC[0], run_forever.RESTART_DELAY_SEC)
+
+
 if __name__ == "__main__":
     unittest.main()

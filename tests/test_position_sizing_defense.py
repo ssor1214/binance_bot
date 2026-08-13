@@ -17,6 +17,10 @@ def cfg() -> Config:
     c.symbol_blacklist_loss_threshold = 2
     c.symbol_blacklist_min_loss_streak = 3
     c.symbol_blacklist_cooldown_min = 60.0
+    c.symbol_cooldown_loss_count = 2
+    c.symbol_cooldown_window_min = 30.0
+    c.symbol_cooldown_block_min = 10.0
+    c.post_win_reentry_cooldown_min = 0.0
     c.loss_reentry_size_mult = 0.55
     c.loss_reentry_min_mult = 0.30
     c.short_size_multiplier = 0.6
@@ -57,11 +61,24 @@ class PositionSizingDefenseTests(unittest.TestCase):
         self.assertLess(after_one_loss, base)
         self.assertFalse(pm.is_symbol_blacklisted("ABCUSDT"))
 
+        # [2026-08-13] 2번째 손실은 연속손실 스트릭(min_loss_streak=3) 기준으로는 아직
+        # 차단 대상이 아니지만, 새로 추가된 시간창 쿨다운(symbol_cooldown_loss_count=2,
+        # window=30min)이 먼저 걸려 짧게(block_min=10) 차단된다.
         pm.record_result("ABCUSDT", -1.0, -0.2, side="LONG")
-        self.assertFalse(pm.is_symbol_blacklisted("ABCUSDT"))
+        self.assertTrue(pm.is_symbol_blacklisted("ABCUSDT"))
 
         pm.record_result("ABCUSDT", -1.0, -0.2, side="LONG")
         self.assertTrue(pm.is_symbol_blacklisted("ABCUSDT"))
+
+    def test_symbol_cooldown_window_blocks_repeated_losses_even_after_a_win(self):
+        """연속(스트릭) 조건과 달리, 창 안에서는 중간에 승리가 끼어도 손실 횟수가 누적된다."""
+        pm = self.make_manager()
+        pm.record_result("XYZUSDT", -1.0, -0.2, side="LONG")
+        self.assertFalse(pm.is_symbol_blacklisted("XYZUSDT"))
+        pm.record_result("XYZUSDT", 1.0, 0.2, side="LONG")  # 승리로 스트릭은 끊기지만
+        self.assertFalse(pm.is_symbol_blacklisted("XYZUSDT"))
+        pm.record_result("XYZUSDT", -1.0, -0.2, side="LONG")
+        self.assertTrue(pm.is_symbol_blacklisted("XYZUSDT"))
 
     def test_short_size_recovers_when_recent_short_results_are_positive(self):
         pm = self.make_manager()
