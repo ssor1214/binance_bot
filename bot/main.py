@@ -1827,9 +1827,12 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
 
     # [2026-08-13 감사수정] whipsaw 필터가 실제(신호강도 기반) 레버리지를 쓰도록 strength를
     # 여기서 먼저 계산한다 (signal_strength는 df/cfg만 필요해 이 시점에 이미 계산 가능).
+    # [2026-08-14 재원복] "어제 거래량/승률 좋았던 때로 원복" — 이 레버리지 반영 자체가 어젯밤
+    # 이후 신설(오프라인 백테스트에서 거래빈도+33%/손익비악화 부작용 확인됨)이라, 필터 호출은
+    # 다시 기본값(leverage 인자 생략 -> 함수 기본값 4.0)으로 되돌린다. strength 계산 자체는
+    # 아래 combined_score 등에서 그대로 필요해 유지.
     strength = signal_strength(df, cfg)
-    entry_leverage = compute_leverage(strength, cfg)
-    if not passes_whipsaw_volatility_filter(ex, cfg, symbol, signal, leverage=entry_leverage):
+    if not passes_whipsaw_volatility_filter(ex, cfg, symbol, signal):
         return None
 
     if not passes_one_min_noise_filter(ex, cfg, symbol, signal):

@@ -122,12 +122,12 @@ class LowBalanceNewEntryPauseTests(unittest.TestCase):
 
         self.assertEqual(entered, ["BTCUSDT"])
 
-    def test_default_low_balance_recovery_allows_four_slots_for_frequency_target(self):
-        """[2026-08-14 사용자요청] "거래횟수가 너무 줄었다" — 복구모드 슬롯 상한을 3->4로
-        완화(LOW_BALANCE_RECOVERY_MAX_POSITIONS, .env)."""
+    def test_default_low_balance_recovery_allows_three_slots_for_frequency_target(self):
+        """[2026-08-14 재원복] "어제 거래량/승률 좋았던 때로 원복" — 3->4 완화를 다시 3으로
+        되돌림(LOW_BALANCE_RECOVERY_MAX_POSITIONS, .env)."""
         cfg = Config()
 
-        self.assertEqual(cfg.low_balance_recovery_max_positions, 4)
+        self.assertEqual(cfg.low_balance_recovery_max_positions, 3)
 
 
 if __name__ == "__main__":
