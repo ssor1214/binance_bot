@@ -30,6 +30,39 @@ def btc_alignment_multiplier(ex, cfg: Config, side: str) -> float:
     return cfg.btc_alignment_neutral_mult
 
 
+def btc_short_term_momentum_opposes(ex, cfg: Config, side: str) -> bool:
+    """[2026-08-14 사용자요청] 오늘 09:26~09:36 LONG 4연속 손실(BTC가 그 10분간 -0.22%
+    미끄러짐) 재발방지 — 기존 btc_alignment_multiplier는 15분봉 EMA20/50 기준이라 이런
+    10분 이내의 짧은 역행은 못 잡는다. 최근 btc_momentum_gate_window_min분간 BTC 종가
+    변화율이 신호 방향과 반대이고 btc_momentum_gate_threshold_pct 이상이면 True.
+
+    [실거래 리플레이 검증, 2026-08-14] 1043건 기준 방향성은 확인됐으나(모든 임계값에서
+    역행그룹 승률이 baseline보다 낮음, 스킵 시뮬레이션 순손익 전부 개선) 걸리는 표본이
+    0.5~6.7%로 작아 통계적 유의성은 약함(z -1.3~-2.4). 그래도 스킵이 아니라 비중만
+    축소하는 낮은 리스크 개입이라 사용자 승인 하에 적용, 데이터 더 쌓이면 재검증."""
+    if not getattr(cfg, "btc_momentum_gate_enabled", True):
+        return False
+    try:
+        df = ex.get_klines(cfg.btc_check_symbol, interval="1m")
+    except Exception:
+        return False
+    window = int(getattr(cfg, "btc_momentum_gate_window_min", 5))
+    if len(df) < window + 1:
+        return False
+    close = df["close"]
+    ref_price = float(close.iloc[-1 - window])
+    last_price = float(close.iloc[-1])
+    if ref_price <= 0:
+        return False
+    change_pct = (last_price - ref_price) / ref_price * 100
+    threshold = abs(getattr(cfg, "btc_momentum_gate_threshold_pct", 0.10))
+    if side == "LONG" and change_pct <= -threshold:
+        return True
+    if side == "SHORT" and change_pct >= threshold:
+        return True
+    return False
+
+
 def mtf_trend_alignment(ex, cfg: Config, symbol: str, side: str) -> tuple[int, int]:
     """1분봉 신호가 나온 뒤, 상위 시간대(기본 5분/15분/1시간/4시간)들의 추세와
     같은 방향인지 확인한다 (EMA fast/slow 기준의 단순 추세 판단).

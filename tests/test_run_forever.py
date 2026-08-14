@@ -50,8 +50,15 @@ class SupervisorRamAutoRecoveryTests(unittest.TestCase):
         mock_run.assert_not_called()
 
     def test_attempts_to_close_only_known_safe_processes_when_ram_is_low(self):
+        # [2026-08-14 점검] subprocess.run은 이미 모킹되어 실제 taskkill/실프로세스 종료는
+        # 절대 일어나지 않는다(핵심 안전조건, 이 테스트가 검증하는 바로 그것) — 다만 log()가
+        # 실제 supervisor.log 파일에 "ChatGPT.exe 종료 완료" 같은 오해 소지 있는 줄을 남기고
+        # 콘솔에도 출력해 마치 실제로 죽인 것처럼 보였다(실측: 라이브 감시와 무관한 순수
+        # 착시, 기능 버그는 아님). log()도 함께 모킹해 테스트가 실제 로그 파일을 더럽히지
+        # 않도록 정리한다.
         with patch.object(run_forever, "get_available_ram_mb", return_value=200.0), \
-             patch("run_forever.subprocess.run") as mock_run:
+             patch("run_forever.subprocess.run") as mock_run, \
+             patch.object(run_forever, "log"):
             mock_run.return_value.returncode = 0
             run_forever.free_ram_if_low()
         killed_targets = [call.args[0][2] for call in mock_run.call_args_list]  # taskkill /IM <name> /F

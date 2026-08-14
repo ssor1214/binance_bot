@@ -586,6 +586,17 @@ class Config:
     chase_entry_range_mult: float = _float("CHASE_ENTRY_RANGE_MULT", 3.0)
     chase_entry_size_mult: float = _float("CHASE_ENTRY_SIZE_MULT", 0.90)
 
+    # [2026-08-14 사용자요청] "손실이 자꾸 생기는데 진입 방향이 잘못된 것 같아" — 09:26~09:36
+    # LONG 4연속손실(BTC가 그 10분간 -0.22% 미끄러짐) 재발방지. 15분봉 기반 btc_alignment_
+    # multiplier로는 못 잡는 짧은(기본 5분) 역행을 감지하면 진입은 막지 않고 비중만 축소한다.
+    # 실거래 리플레이 검증(1043건): 방향성은 확인(역행그룹 승률이 항상 baseline보다 낮음)됐으나
+    # 걸리는 표본이 작아(0.5~6.7%) 통계적 유의성은 약함 — 스킵이 아닌 비중축소라 리스크 낮게
+    # 판단해 사용자 승인 하에 적용. 데이터 더 쌓이면(1~2주 후) 임계값 재검증 권장.
+    btc_momentum_gate_enabled: bool = _bool("BTC_MOMENTUM_GATE_ENABLED", "true")
+    btc_momentum_gate_window_min: int = _int("BTC_MOMENTUM_GATE_WINDOW_MIN", 5)
+    btc_momentum_gate_threshold_pct: float = _float("BTC_MOMENTUM_GATE_THRESHOLD_PCT", 0.10)
+    btc_momentum_gate_size_mult: float = _float("BTC_MOMENTUM_GATE_SIZE_MULT", 0.5)
+
     # [2026-08-12 사용자요청] BTC정렬/방향성과/계좌방어/기대값방어/상관리스크 등 여러 방어
     # 배율이 순차적으로 곱해지면서 겹칠 때, 개별로는 합리적인 배율들이 합쳐져 최종 비중이
     # 0 근처까지 떨어져 "계산된 수량이 0 이하"로 진입 자체가 스킵되는 문제 실측(실거래

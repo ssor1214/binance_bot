@@ -23,7 +23,7 @@ from .trade_ledger import (
 )
 from .ev_analysis import analyze_by_symbol, negative_ev_segments
 from .ws_client import FileBackedFillTracker, FileBackedKlineCache, MultiFileBackedKlineCache
-from .strategy import btc_alignment_multiplier, detect_reversal, generate_signal_with_probability, immediate_momentum_ok, is_momentum_continuing, is_swing_continuing, mtf_trend_alignment, pnl_pct, quick_profit_score, signal_strength, volume_direction_ok
+from .strategy import btc_alignment_multiplier, btc_short_term_momentum_opposes, detect_reversal, generate_signal_with_probability, immediate_momentum_ok, is_momentum_continuing, is_swing_continuing, mtf_trend_alignment, pnl_pct, quick_profit_score, signal_strength, volume_direction_ok
 from .telegram_notifier import TelegramNotifier
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
@@ -1884,6 +1884,7 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
     candle_range = float(curr_row["high"]) - float(curr_row["low"])
     atr_value = float(curr_row.get("atr", 0.0) or 0.0)
     chase_entry = bool(atr_value > 0 and candle_range >= atr_value * cfg.chase_entry_range_mult)
+    btc_momentum_opposes = btc_short_term_momentum_opposes(ex, cfg, signal)
     price = float(df.iloc[-1]["close"])
     candle_time = df.iloc[-1]["open_time"]
     # 진입 성공 확률(probability)을 최우선으로 반영하고, 신호 강도(strength)와
@@ -1904,6 +1905,7 @@ def scan_entry_candidate(ex: Exchange, cfg: Config, symbol: str, total_balance: 
         "avg_quote_volume": avg_quote_volume,
         "btc_mult": btc_mult,
         "chase_entry": chase_entry,
+        "btc_momentum_opposes": btc_momentum_opposes,
     }
 
 
@@ -2130,6 +2132,14 @@ def execute_entry(ex: Exchange, pm: PositionManager, cfg: Config, tg: TelegramNo
         log.info(
             "[%s] 진입캔들 변동폭이 평균 변동폭(ATR)의 %.1f배 이상(소진성 스파이크 의심) — 비중 %.0f%%로 소폭 축소",
             symbol, cfg.chase_entry_range_mult, chase_mult * 100,
+        )
+
+    if candidate.get("btc_momentum_opposes"):
+        btc_mom_mult = max(0.0, min(1.0, cfg.btc_momentum_gate_size_mult))
+        ratio *= btc_mom_mult
+        log.info(
+            "[%s] BTC 최근 %d분 모멘텀이 신호 방향과 반대(%.2f%%p 이상) — 비중 %.0f%%로 축소",
+            symbol, cfg.btc_momentum_gate_window_min, cfg.btc_momentum_gate_threshold_pct, btc_mom_mult * 100,
         )
 
     # [2026-08-12 사용자요청] "방어배율이 곱셈으로 겹쳐서 수량이 0이 돼 스킵되는" 문제 —

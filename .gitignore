@@ -5,6 +5,7 @@ __pycache__/
 logs/*.log*
 logs/*.jsonl
 logs/*.json
+logs/*.out
 .venv/
 .venv312/
 venv/
