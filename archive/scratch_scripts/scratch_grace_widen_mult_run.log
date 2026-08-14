@@ -1,0 +1,64 @@
+bot origin 거래 1167건 로드 (범위 2026-08-10 00:45 ~ 2026-08-14 19:52)
+  진행 100/1167 (skip 6)...
+  진행 200/1167 (skip 11)...
+  진행 300/1167 (skip 18)...
+  진행 500/1167 (skip 32)...
+  진행 600/1167 (skip 36)...
+  진행 700/1167 (skip 39)...
+  진행 800/1167 (skip 43)...
+  진행 900/1167 (skip 49)...
+  진행 1000/1167 (skip 51)...
+  진행 1100/1167 (skip 54)...
+완료: 분석가능 1111건, skip 56건
+원자료 저장: scratch_grace_widen_mult_result.json
+
+=== baseline(2.5, 실측) === n=1111 순손익=-33.259 USDT 승률=52.1%
+
+=== mult=2.0 === n=1111 순손익=-42.813 USDT (Δ-9.554) 승률=52.0% 조기컷건수=29
+  조기컷 중 개선(더 일찍 잘려 손실 축소): 7건, 합계 Δ=+0.629 USDT
+  조기컷 중 악화(살아날 수 있었는데 일찍 잘림): 22건, 합계 Δ=-10.183 USDT
+  악화 상위 10건:
+    APRUSDT LONG entered=08-12 17:11 actual_pnl=+1.412 exit_reason=EXTERNAL_CLOSE_PROFIT held=43s variant_pnl=-0.980 Δ=-2.391
+    GUAUSDT LONG entered=08-11 01:06 actual_pnl=-0.139 exit_reason=EXTERNAL_CLOSE_LOSS held=47s variant_pnl=-0.978 Δ=-0.840
+    BLUAIUSDT SHORT entered=08-11 13:06 actual_pnl=-0.214 exit_reason=EXTERNAL_CLOSE_LOSS held=42s variant_pnl=-0.993 Δ=-0.779
+    CYSUSDT LONG entered=08-14 14:54 actual_pnl=-0.012 exit_reason=TAKE_PROFIT held=58s variant_pnl=-0.605 Δ=-0.593
+    EPICUSDT LONG entered=08-10 02:38 actual_pnl=-0.027 exit_reason=EXTERNAL_CLOSE_LOSS held=37s variant_pnl=-0.592 Δ=-0.565
+    BEATUSDT LONG entered=08-13 10:31 actual_pnl=-0.416 exit_reason=SOFT_STOP held=65s variant_pnl=-0.967 Δ=-0.551
+    BEATUSDT LONG entered=08-11 15:26 actual_pnl=-0.466 exit_reason=EXTERNAL_CLOSE_LOSS held=42s variant_pnl=-0.953 Δ=-0.487
+    CYSUSDT SHORT entered=08-11 16:10 actual_pnl=-0.530 exit_reason=EXTERNAL_CLOSE_LOSS held=40s variant_pnl=-0.984 Δ=-0.454
+    BRUSDT LONG entered=08-12 21:34 actual_pnl=-0.547 exit_reason=STOP_LOSS held=242s variant_pnl=-0.976 Δ=-0.428
+    XNYUSDT LONG entered=08-10 00:54 actual_pnl=-0.166 exit_reason=FUNDING_FORCE_CLOSE held=33s variant_pnl=-0.592 Δ=-0.426
+  개선 상위 10건:
+    USUSDT LONG entered=08-14 13:45 actual_pnl=-0.828 exit_reason=EXTERNAL_CLOSE_LOSS held=109s variant_pnl=-0.621 Δ=+0.207
+    AKEUSDT LONG entered=08-14 19:25 actual_pnl=-0.794 exit_reason=STOP_LOSS held=33s variant_pnl=-0.623 Δ=+0.171
+    CYSUSDT LONG entered=08-13 19:49 actual_pnl=-1.070 exit_reason=EXTERNAL_CLOSE_LOSS held=157s variant_pnl=-0.957 Δ=+0.112
+    APRUSDT LONG entered=08-13 02:12 actual_pnl=-1.047 exit_reason=STOP_LOSS held=184s variant_pnl=-0.995 Δ=+0.052
+    CYSUSDT LONG entered=08-10 08:46 actual_pnl=-1.015 exit_reason=EXTERNAL_CLOSE_LOSS held=87s variant_pnl=-0.965 Δ=+0.049
+    USUSDT SHORT entered=08-10 01:58 actual_pnl=-0.611 exit_reason=EXTERNAL_CLOSE_LOSS held=35s variant_pnl=-0.589 Δ=+0.021
+    BROCCOLIF3BUSDT LONG entered=08-10 04:36 actual_pnl=-0.609 exit_reason=EXTERNAL_CLOSE_LOSS held=35s variant_pnl=-0.593 Δ=+0.016
+
+=== mult=1.5 === n=1111 순손익=-56.057 USDT (Δ-22.798) 승률=51.2% 조기컷건수=79
+  조기컷 중 개선(더 일찍 잘려 손실 축소): 15건, 합계 Δ=+2.339 USDT
+  조기컷 중 악화(살아날 수 있었는데 일찍 잘림): 64건, 합계 Δ=-25.137 USDT
+  악화 상위 10건:
+    BMTUSDT LONG entered=08-12 00:06 actual_pnl=+1.646 exit_reason=TAKE_PROFIT held=302s variant_pnl=-2.056 Δ=-3.702
+    APRUSDT LONG entered=08-12 17:11 actual_pnl=+1.412 exit_reason=EXTERNAL_CLOSE_PROFIT held=43s variant_pnl=-0.743 Δ=-2.154
+    BEATUSDT LONG entered=08-12 14:40 actual_pnl=+0.822 exit_reason=EXTERNAL_CLOSE_PROFIT held=53s variant_pnl=-0.742 Δ=-1.564
+    BEATUSDT LONG entered=08-12 15:28 actual_pnl=+0.327 exit_reason=TAKE_PROFIT held=139s variant_pnl=-0.746 Δ=-1.072
+    PROMUSDT LONG entered=08-12 11:13 actual_pnl=+0.236 exit_reason=EXTERNAL_CLOSE_PROFIT held=45s variant_pnl=-0.752 Δ=-0.988
+    BEATUSDT LONG entered=08-12 16:06 actual_pnl=+0.106 exit_reason=TAKE_PROFIT held=62s variant_pnl=-0.751 Δ=-0.857
+    SKYAIUSDT SHORT entered=08-12 01:09 actual_pnl=+0.017 exit_reason=EXTERNAL_CLOSE_PROFIT held=81s variant_pnl=-0.748 Δ=-0.765
+    BLUAIUSDT LONG entered=08-11 03:56 actual_pnl=-0.010 exit_reason=EXTERNAL_CLOSE_LOSS held=77s variant_pnl=-0.743 Δ=-0.733
+    AKEUSDT LONG entered=08-14 19:12 actual_pnl=+0.048 exit_reason=EXTERNAL_CLOSE_PROFIT held=195s variant_pnl=-0.628 Δ=-0.676
+    VELVETUSDT LONG entered=08-14 14:22 actual_pnl=+0.172 exit_reason=EXTERNAL_CLOSE_PROFIT held=40s variant_pnl=-0.464 Δ=-0.636
+  개선 상위 10건:
+    USUSDT LONG entered=08-14 13:45 actual_pnl=-0.828 exit_reason=EXTERNAL_CLOSE_LOSS held=109s variant_pnl=-0.471 Δ=+0.357
+    CYSUSDT LONG entered=08-13 19:49 actual_pnl=-1.070 exit_reason=EXTERNAL_CLOSE_LOSS held=157s variant_pnl=-0.724 Δ=+0.346
+    AKEUSDT LONG entered=08-14 19:25 actual_pnl=-0.794 exit_reason=STOP_LOSS held=33s variant_pnl=-0.472 Δ=+0.322
+    APRUSDT LONG entered=08-13 02:12 actual_pnl=-1.047 exit_reason=STOP_LOSS held=184s variant_pnl=-0.754 Δ=+0.293
+    CYSUSDT LONG entered=08-10 08:46 actual_pnl=-1.015 exit_reason=EXTERNAL_CLOSE_LOSS held=87s variant_pnl=-0.732 Δ=+0.283
+    LSKUSDT LONG entered=08-12 21:45 actual_pnl=-0.916 exit_reason=EXTERNAL_CLOSE_LOSS held=94s variant_pnl=-0.748 Δ=+0.168
+    USUSDT SHORT entered=08-10 01:58 actual_pnl=-0.611 exit_reason=EXTERNAL_CLOSE_LOSS held=35s variant_pnl=-0.450 Δ=+0.161
+    BROCCOLIF3BUSDT LONG entered=08-10 04:36 actual_pnl=-0.609 exit_reason=EXTERNAL_CLOSE_LOSS held=35s variant_pnl=-0.453 Δ=+0.156
+    TAKEUSDT LONG entered=08-10 15:46 actual_pnl=-0.854 exit_reason=EXTERNAL_CLOSE_LOSS held=56s variant_pnl=-0.751 Δ=+0.103
+    TUTUSDT SHORT entered=08-14 19:16 actual_pnl=-0.504 exit_reason=EXTERNAL_CLOSE_LOSS held=158s variant_pnl=-0.470 Δ=+0.034

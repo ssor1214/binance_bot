@@ -1,0 +1,344 @@
+[
+  {
+    "symbol": "ACEUSDT",
+    "first_ts": "2026-08-14 12:15:10",
+    "last_ts": "2026-08-14 12:15:49",
+    "count": 2,
+    "max_score": 0.65,
+    "max_prob": 0.83,
+    "min_score": 0.65
+  },
+  {
+    "symbol": "ACUUSDT",
+    "first_ts": "2026-08-13 16:39:33",
+    "last_ts": "2026-08-13 16:39:33",
+    "count": 1,
+    "max_score": 0.6,
+    "max_prob": 0.72,
+    "min_score": 0.6
+  },
+  {
+    "symbol": "ACUUSDT",
+    "first_ts": "2026-08-13 21:33:29",
+    "last_ts": "2026-08-13 21:34:08",
+    "count": 2,
+    "max_score": 0.67,
+    "max_prob": 0.88,
+    "min_score": 0.67
+  },
+  {
+    "symbol": "ACUUSDT",
+    "first_ts": "2026-08-14 00:12:16",
+    "last_ts": "2026-08-14 00:12:55",
+    "count": 2,
+    "max_score": 0.61,
+    "max_prob": 0.83,
+    "min_score": 0.61
+  },
+  {
+    "symbol": "APRUSDT",
+    "first_ts": "2026-08-13 16:30:32",
+    "last_ts": "2026-08-13 16:30:32",
+    "count": 1,
+    "max_score": 0.74,
+    "max_prob": 0.78,
+    "min_score": 0.74
+  },
+  {
+    "symbol": "APRUSDT",
+    "first_ts": "2026-08-13 21:06:31",
+    "last_ts": "2026-08-13 21:07:07",
+    "count": 2,
+    "max_score": 0.67,
+    "max_prob": 0.86,
+    "min_score": 0.67
+  },
+  {
+    "symbol": "APRUSDT",
+    "first_ts": "2026-08-14 03:01:15",
+    "last_ts": "2026-08-14 03:01:53",
+    "count": 2,
+    "max_score": 0.59,
+    "max_prob": 0.84,
+    "min_score": 0.59
+  },
+  {
+    "symbol": "AVAAIUSDT",
+    "first_ts": "2026-08-13 09:09:10",
+    "last_ts": "2026-08-13 09:09:54",
+    "count": 2,
+    "max_score": 0.54,
+    "max_prob": 0.82,
+    "min_score": 0.54
+  },
+  {
+    "symbol": "AVAAIUSDT",
+    "first_ts": "2026-08-13 16:39:33",
+    "last_ts": "2026-08-13 16:39:33",
+    "count": 1,
+    "max_score": 0.56,
+    "max_prob": 0.87,
+    "min_score": 0.56
+  },
+  {
+    "symbol": "AVAAIUSDT",
+    "first_ts": "2026-08-14 08:02:42",
+    "last_ts": "2026-08-14 08:03:54",
+    "count": 3,
+    "max_score": 0.67,
+    "max_prob": 0.81,
+    "min_score": 0.54
+  },
+  {
+    "symbol": "AVNTUSDT",
+    "first_ts": "2026-08-14 03:23:15",
+    "last_ts": "2026-08-14 03:23:59",
+    "count": 2,
+    "max_score": 0.56,
+    "max_prob": 0.82,
+    "min_score": 0.56
+  },
+  {
+    "symbol": "BEATUSDT",
+    "first_ts": "2026-08-13 20:30:08",
+    "last_ts": "2026-08-13 20:30:47",
+    "count": 2,
+    "max_score": 0.62,
+    "max_prob": 0.86,
+    "min_score": 0.62
+  },
+  {
+    "symbol": "BLESSUSDT",
+    "first_ts": "2026-08-13 20:31:21",
+    "last_ts": "2026-08-13 20:32:01",
+    "count": 2,
+    "max_score": 0.67,
+    "max_prob": 0.97,
+    "min_score": 0.67
+  },
+  {
+    "symbol": "BLESSUSDT",
+    "first_ts": "2026-08-13 21:06:31",
+    "last_ts": "2026-08-13 21:06:31",
+    "count": 1,
+    "max_score": 0.66,
+    "max_prob": 0.91,
+    "min_score": 0.66
+  },
+  {
+    "symbol": "BLESSUSDT",
+    "first_ts": "2026-08-13 21:29:39",
+    "last_ts": "2026-08-13 21:29:39",
+    "count": 1,
+    "max_score": 0.6,
+    "max_prob": 0.8,
+    "min_score": 0.6
+  },
+  {
+    "symbol": "BMTUSDT",
+    "first_ts": "2026-08-12 17:33:31",
+    "last_ts": "2026-08-12 17:34:12",
+    "count": 2,
+    "max_score": 0.55,
+    "max_prob": 0.83,
+    "min_score": 0.55
+  },
+  {
+    "symbol": "BMTUSDT",
+    "first_ts": "2026-08-13 06:01:32",
+    "last_ts": "2026-08-13 06:01:32",
+    "count": 1,
+    "max_score": 0.53,
+    "max_prob": 0.88,
+    "min_score": 0.53
+  },
+  {
+    "symbol": "BTWUSDT",
+    "first_ts": "2026-08-13 17:31:08",
+    "last_ts": "2026-08-13 17:31:54",
+    "count": 2,
+    "max_score": 0.61,
+    "max_prob": 0.81,
+    "min_score": 0.61
+  },
+  {
+    "symbol": "CLOUSDT",
+    "first_ts": "2026-08-12 12:12:22",
+    "last_ts": "2026-08-12 12:13:01",
+    "count": 2,
+    "max_score": 0.74,
+    "max_prob": 0.78,
+    "min_score": 0.74
+  },
+  {
+    "symbol": "COTIUSDT",
+    "first_ts": "2026-08-13 07:23:21",
+    "last_ts": "2026-08-13 07:23:59",
+    "count": 2,
+    "max_score": 0.58,
+    "max_prob": 0.78,
+    "min_score": 0.58
+  },
+  {
+    "symbol": "COTIUSDT",
+    "first_ts": "2026-08-13 08:00:42",
+    "last_ts": "2026-08-13 08:00:42",
+    "count": 1,
+    "max_score": 0.59,
+    "max_prob": 0.81,
+    "min_score": 0.59
+  },
+  {
+    "symbol": "CYSUSDT",
+    "first_ts": "2026-08-13 13:16:37",
+    "last_ts": "2026-08-13 13:16:37",
+    "count": 1,
+    "max_score": 0.64,
+    "max_prob": 0.89,
+    "min_score": 0.64
+  },
+  {
+    "symbol": "HOMEUSDT",
+    "first_ts": "2026-08-13 21:04:41",
+    "last_ts": "2026-08-13 21:04:41",
+    "count": 1,
+    "max_score": 0.67,
+    "max_prob": 0.82,
+    "min_score": 0.67
+  },
+  {
+    "symbol": "HOMEUSDT",
+    "first_ts": "2026-08-13 21:12:30",
+    "last_ts": "2026-08-13 21:12:30",
+    "count": 1,
+    "max_score": 0.68,
+    "max_prob": 0.79,
+    "min_score": 0.68
+  },
+  {
+    "symbol": "HOMEUSDT",
+    "first_ts": "2026-08-14 17:46:36",
+    "last_ts": "2026-08-14 17:46:36",
+    "count": 1,
+    "max_score": 0.63,
+    "max_prob": 0.93,
+    "min_score": 0.63
+  },
+  {
+    "symbol": "LABUSDT",
+    "first_ts": "2026-08-14 18:18:23",
+    "last_ts": "2026-08-14 18:18:23",
+    "count": 1,
+    "max_score": 0.63,
+    "max_prob": 0.91,
+    "min_score": 0.63
+  },
+  {
+    "symbol": "MMTUSDT",
+    "first_ts": "2026-08-14 12:34:19",
+    "last_ts": "2026-08-14 12:34:57",
+    "count": 2,
+    "max_score": 0.52,
+    "max_prob": 0.77,
+    "min_score": 0.52
+  },
+  {
+    "symbol": "NILUSDT",
+    "first_ts": "2026-08-13 11:42:34",
+    "last_ts": "2026-08-13 11:42:34",
+    "count": 1,
+    "max_score": 0.62,
+    "max_prob": 0.9,
+    "min_score": 0.62
+  },
+  {
+    "symbol": "PROMUSDT",
+    "first_ts": "2026-08-13 11:52:18",
+    "last_ts": "2026-08-13 11:52:58",
+    "count": 2,
+    "max_score": 0.52,
+    "max_prob": 0.77,
+    "min_score": 0.52
+  },
+  {
+    "symbol": "PROMUSDT",
+    "first_ts": "2026-08-14 05:31:22",
+    "last_ts": "2026-08-14 05:32:01",
+    "count": 2,
+    "max_score": 0.53,
+    "max_prob": 0.86,
+    "min_score": 0.52
+  },
+  {
+    "symbol": "PROMUSDT",
+    "first_ts": "2026-08-14 16:43:37",
+    "last_ts": "2026-08-14 16:43:37",
+    "count": 1,
+    "max_score": 0.49,
+    "max_prob": 0.78,
+    "min_score": 0.49
+  },
+  {
+    "symbol": "TSTUSDT",
+    "first_ts": "2026-08-13 16:00:17",
+    "last_ts": "2026-08-13 16:00:17",
+    "count": 1,
+    "max_score": 0.66,
+    "max_prob": 0.94,
+    "min_score": 0.66
+  },
+  {
+    "symbol": "TUTUSDT",
+    "first_ts": "2026-08-13 10:29:43",
+    "last_ts": "2026-08-13 10:29:43",
+    "count": 1,
+    "max_score": 0.54,
+    "max_prob": 0.78,
+    "min_score": 0.54
+  },
+  {
+    "symbol": "TUTUSDT",
+    "first_ts": "2026-08-13 14:17:43",
+    "last_ts": "2026-08-13 14:17:43",
+    "count": 1,
+    "max_score": 0.66,
+    "max_prob": 0.87,
+    "min_score": 0.66
+  },
+  {
+    "symbol": "TUTUSDT",
+    "first_ts": "2026-08-13 16:16:08",
+    "last_ts": "2026-08-13 16:16:48",
+    "count": 2,
+    "max_score": 0.61,
+    "max_prob": 0.86,
+    "min_score": 0.61
+  },
+  {
+    "symbol": "USUSDT",
+    "first_ts": "2026-08-13 11:43:19",
+    "last_ts": "2026-08-13 11:43:19",
+    "count": 1,
+    "max_score": 0.66,
+    "max_prob": 0.84,
+    "min_score": 0.66
+  },
+  {
+    "symbol": "USUSDT",
+    "first_ts": "2026-08-14 11:46:36",
+    "last_ts": "2026-08-14 11:46:36",
+    "count": 1,
+    "max_score": 0.61,
+    "max_prob": 0.86,
+    "min_score": 0.61
+  },
+  {
+    "symbol": "USUSDT",
+    "first_ts": "2026-08-14 16:22:31",
+    "last_ts": "2026-08-14 16:23:09",
+    "count": 2,
+    "max_score": 0.62,
+    "max_prob": 0.75,
+    "min_score": 0.62
+  }
+]

@@ -74,6 +74,10 @@ class TelegramNotifier:
                 [{"text": "💰 잔고"}, {"text": "📊 포지션"}],
                 [{"text": "📈 오늘수익률"}, {"text": "🏆 성과"}],
                 [{"text": "⚙️ 설정"}, {"text": "🛑 포지션종료"}],
+                # [2026-08-14 사용자요청] "텔레그램에서 봇 일시정지 기능(상시 버튼)이 필요해"
+                # — 하단 고정메뉴라 매번 /menu 안 불러도 언제든 누를 수 있음. 신규 진입만
+                # 멈추고(tg.trading_paused), 기존 포지션 손절/익절/트레일링 관리는 그대로 계속됨.
+                [{"text": "⏸ 일시정지"}, {"text": "▶️ 재개"}],
             ],
             "resize_keyboard": True,
             "is_persistent": True,
@@ -514,6 +518,19 @@ class TelegramNotifier:
                 self.send("현재 보유 중인 포지션이 없어요.")
             else:
                 self.send("종료할 포지션을 선택하세요:", reply_markup=keyboard)
+        elif cmd_no_emoji in ("일시정지", "정지", "pause", "stop") or cmd in ("일시정지", "정지"):
+            if self.trading_paused:
+                self.send("이미 일시정지 상태예요. 신규 진입은 계속 멈춰 있습니다.")
+            else:
+                self.trading_paused = True
+                self.send("⏸ 일시정지했어요. 신규 진입은 멈추고, 기존 포지션의 손절/익절/트레일링은 그대로 관리됩니다. 재개하려면 '▶️ 재개'를 누르세요.")
+        elif cmd_no_emoji in ("재개", "resume", "start") or cmd in ("재개",):
+            if self.trading_paused:
+                self.trading_paused = False
+                self._awaiting_confirmation = False
+                self.send("▶️ 재개했어요. 신규 진입을 다시 시작합니다.")
+            else:
+                self.send("이미 정상 진행 중이에요 (일시정지 상태가 아니에요).")
         elif cmd in ("start", "help", "도움말"):
             self.send(
                 "사용 가능한 명령어: /menu (버튼 메뉴), /status (잔고·포지션 확인), "
