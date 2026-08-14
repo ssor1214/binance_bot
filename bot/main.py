@@ -2317,7 +2317,13 @@ def select_and_enter_best_candidates(ex: Exchange, pm: PositionManager, cfg: Con
                   total_balance, cfg.critical_balance_stop_usdt)
         tg.send(f"✅ 자산보호모드 해제: 총자산 {total_balance:.2f} USDT로 회복되어 신규 진입을 재개합니다.")
 
-    if not candidates or tg.trading_paused:
+    # [2026-08-14 사용자요청] "10시 이후 신호도 매매도 안 뜨네" — 후보가 0개면 여기서 아무
+    # 로그도 안 남기고 조용히 리턴해서, 봇이 멈춘 건지 그냥 신호가 없는 건지 구분이 안 됐다.
+    # 동작은 그대로 두고(신규 진입 안 함) 가시성만 위해 0개일 때도 한 줄 남긴다.
+    if not candidates:
+        log.info("이번 주기 진입 후보 0개 — 신규 진입 없음")
+        return
+    if tg.trading_paused:
         return
     # [2026-08-11 사용자요청] 전체 연패 서킷브레이커 — daily_loss_limit_pct(하루 누적)와는
     # 별개로, 짧은 시간에 5연패가 나면 "지금 장세 자체가 안 맞는다"고 보고 심볼 구분 없이
