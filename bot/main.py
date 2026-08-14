@@ -15,6 +15,7 @@ from .position_manager import PositionManager, net_profit_usdt, profit_usdt
 from .trade_ledger import (
     TradeRecord,
     append_trade_record,
+    find_open_bot_position_opened_at,
     infer_open_position_origin,
     load_trade_records,
     mark_bot_position_open,
@@ -387,12 +388,26 @@ def format_btc_trend_digest(results: dict) -> str:
 
 
 def sync_existing_positions(ex: Exchange, pm: PositionManager):
-    """봇 재시작 시 거래소에 이미 열려있는 포지션을 한 번의 호출로 복원한다."""
+    """봇 재시작 시 거래소에 이미 열려있는 포지션을 한 번의 호출로 복원한다.
+
+    [2026-08-14 실측 사고] entered_at을 항상 '지금'으로 새로 채우면, 진입 유예기간(180초)
+    동안 넓혀둔 손절폭(~20% ROE)이 재시작 이후 영원히 원래 폭(8%)으로 안 좁혀지는 버그가
+    있었다(APRUSDT 실사고, -20.1% ROE 손절). origin=bot이고 open_bot_positions.json에 매칭
+    기록이 있으면 실제 최초 진입시각을 복원하고 stop_loss_widened=True로 표시해, 다음 폴링
+    주기에 유예기간 경과 여부를 정확히 재판정(이미 지났으면 즉시 원래 폭으로 좁힘)하게 한다."""
     for pos in ex.get_open_positions():
         symbol = pos["symbol"]
         quantity = abs(pos["amount"])
         origin = infer_open_position_origin(symbol, pos["side"], pos["entry_price"], quantity)
-        pm.track(symbol, pos["side"], pos["entry_price"], quantity, leverage=pos.get("leverage", 1.0), origin=origin)
+        entered_at = None
+        stop_loss_widened = False
+        if origin == "bot":
+            entered_at = find_open_bot_position_opened_at(symbol, pos["side"], pos["entry_price"], quantity)
+            stop_loss_widened = entered_at is not None
+        pm.track(
+            symbol, pos["side"], pos["entry_price"], quantity, leverage=pos.get("leverage", 1.0), origin=origin,
+            entered_at=entered_at, stop_loss_widened=stop_loss_widened,
+        )
         log.info("기존 포지션 복원: %s origin=%s", pos, origin)
 
 

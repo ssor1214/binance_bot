@@ -189,3 +189,26 @@ def infer_open_position_origin(symbol: str, side: str, entry_price: float, quant
     entry_ok = abs(saved_entry - entry) <= max(abs(saved_entry), abs(entry), 1.0) * 0.002
     qty_ok = abs(saved_qty - qty) <= max(abs(saved_qty), abs(qty), 1.0) * 0.01
     return "bot" if entry_ok and qty_ok else "manual"
+
+
+def find_open_bot_position_opened_at(symbol: str, side: str, entry_price: float, quantity: float,
+                                      path: Path | str = DEFAULT_OPEN_POSITIONS_PATH) -> float | None:
+    """[2026-08-14 실측 사고] 재시작 시 sync_existing_positions()가 entered_at을 항상 '지금'으로
+    새로 채우고 stop_loss_widened를 항상 False로 초기화해서, 진입 유예기간(180초) 동안 넓혀둔
+    손절폭(~20% ROE)이 재시작 이후 영원히 원래 폭(8%)으로 안 좁혀지는 버그가 있었다(APRUSDT
+    -20.1% ROE 손절 실사고). infer_open_position_origin()과 동일한 매칭 기준으로 이 심볼의
+    실제 최초 진입시각(opened_at)을 찾아 반환한다 — 못 찾으면 None(호출측이 안전하게 폴백)."""
+    record = load_open_bot_positions(path).get(symbol)
+    if not record or record.get("side") != side:
+        return None
+    try:
+        saved_entry = float(record.get("entry_price", 0.0))
+        saved_qty = float(record.get("quantity", 0.0))
+        entry = float(entry_price)
+        qty = abs(float(quantity))
+        opened_at = float(record.get("opened_at"))
+    except (TypeError, ValueError):
+        return None
+    entry_ok = abs(saved_entry - entry) <= max(abs(saved_entry), abs(entry), 1.0) * 0.002
+    qty_ok = abs(saved_qty - qty) <= max(abs(saved_qty), abs(qty), 1.0) * 0.01
+    return opened_at if entry_ok and qty_ok else None

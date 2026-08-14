@@ -497,8 +497,16 @@ class PositionManager:
         self.symbol_recent_ratio[symbol] = (ratio, time.time())
 
     def track(self, symbol: str, side: str, entry_price: float, quantity: float, leverage: float = 1.0,
-              origin: str = "bot", balance_at_entry: float | None = None):
+              origin: str = "bot", balance_at_entry: float | None = None,
+              entered_at: float | None = None, stop_loss_widened: bool = False):
+        """[2026-08-14 실측 사고] entered_at/stop_loss_widened를 명시적으로 넘길 수 있게 해서,
+        재시작 시 복원되는 포지션이 실제 최초 진입시각을 유지하고(기본값인 '지금'으로 리셋되지
+        않게) 유예기간(180초) 경과 여부가 재시작과 무관하게 정확히 판정되도록 한다 — 신규
+        진입(execute_entry 등)은 이 인자를 안 넘겨서 기존과 동일하게 entered_at=지금, widened=False."""
         pos = TrackedPosition(symbol, side, entry_price, quantity, leverage=leverage, origin=origin)
+        if entered_at is not None:
+            pos.entered_at = entered_at
+        pos.stop_loss_widened = stop_loss_widened
         if balance_at_entry:
             # [2026-08-10] 진입 시점 잔고를 기준으로 물타기 총상한을 미리 확정해둔다 — 나중에
             # should_average_down에서 처음 발견할 때 계산하는 것보다, "이 포지션을 열 때의

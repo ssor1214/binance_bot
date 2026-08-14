@@ -11,6 +11,7 @@ from bot.trade_ledger import (
     DEFAULT_LEDGER_PATH,
     TradeRecord,
     append_trade_record,
+    find_open_bot_position_opened_at,
     infer_open_position_origin,
     load_open_bot_positions,
     load_trade_records,
@@ -143,6 +144,41 @@ class OpenBotPositionStateTests(unittest.TestCase):
 
             self.assertEqual(load_open_bot_positions(path), {})
             self.assertEqual(infer_open_position_origin("ABCUSDT", "LONG", 10.0, 3.0, path=path), "manual")
+
+
+class FindOpenBotPositionOpenedAtTests(unittest.TestCase):
+    """[2026-08-14 실측 사고] 재시작 시 entered_at이 '지금'으로 리셋되어 진입 유예기간
+    (180초) 동안 넓혀둔 손절폭이 영원히 안 좁혀지던 버그(APRUSDT -20.1% ROE 손절 실사고)
+    재발방지 — 재시작 후에도 실제 최초 진입시각을 복원할 수 있는지 검증한다."""
+
+    def test_matched_position_returns_original_opened_at(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open.json"
+            mark_bot_position_open("ABCUSDT", "LONG", 10.0, 3.0, 4.0, path=path)
+            saved_opened_at = load_open_bot_positions(path)["ABCUSDT"]["opened_at"]
+
+            result = find_open_bot_position_opened_at("ABCUSDT", "LONG", 10.0, 3.0, path=path)
+        self.assertEqual(result, saved_opened_at)
+
+    def test_unmatched_symbol_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open.json"
+            mark_bot_position_open("ABCUSDT", "LONG", 10.0, 3.0, 4.0, path=path)
+
+            self.assertIsNone(find_open_bot_position_opened_at("XYZUSDT", "LONG", 10.0, 3.0, path=path))
+
+    def test_mismatched_side_or_price_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open.json"
+            mark_bot_position_open("ABCUSDT", "LONG", 10.0, 3.0, 4.0, path=path)
+
+            self.assertIsNone(find_open_bot_position_opened_at("ABCUSDT", "SHORT", 10.0, 3.0, path=path))
+            self.assertIsNone(find_open_bot_position_opened_at("ABCUSDT", "LONG", 10.5, 3.0, path=path))
+
+    def test_missing_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no_such_file.json"
+            self.assertIsNone(find_open_bot_position_opened_at("ABCUSDT", "LONG", 10.0, 3.0, path=path))
 
 
 if __name__ == "__main__":

@@ -107,5 +107,59 @@ class PositionManagerGraceAwareEvaluateTests(unittest.TestCase):
         self.assertIsNone(decision, "유예기간 중에는 기본폭(6%)에서 손절되면 안 된다")
 
 
+class SyncExistingPositionsPreservesGraceStateTests(unittest.TestCase):
+    """[2026-08-14 실측 사고] 재시작 시 sync_existing_positions()가 entered_at을 '지금'으로
+    새로 채우고 stop_loss_widened를 항상 False로 초기화해서, 진입 유예기간(180초) 동안
+    넓혀둔 손절폭(~20% ROE)이 재시작 이후 영원히 원래 폭(8%)으로 안 좁혀지던 버그
+    (APRUSDT 실사고, -20.1% ROE 손절) 재발방지 검증."""
+
+    def test_track_with_explicit_entered_at_overrides_default(self):
+        c = cfg()
+        pm = PositionManager(c)
+        pm.track("ABCUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0, entered_at=500.0)
+        self.assertEqual(pm.positions["ABCUSDT"].entered_at, 500.0)
+
+    def test_track_without_entered_at_defaults_to_now(self):
+        """dataclass의 default_factory=time.time은 정의 시점에 함수를 바인딩하므로
+        bot.position_manager.time.time 패치로는 가로챌 수 없다 — 대신 실제 현재시각과
+        거의 같은지(수 초 오차 이내)로 검증한다."""
+        c = cfg()
+        pm = PositionManager(c)
+        before = time.time()
+        pm.track("ABCUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0)
+        after = time.time()
+        self.assertTrue(before <= pm.positions["ABCUSDT"].entered_at <= after)
+
+    def test_track_stop_loss_widened_flag_passthrough(self):
+        c = cfg()
+        pm = PositionManager(c)
+        pm.track("ABCUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0,
+                  entered_at=500.0, stop_loss_widened=True)
+        self.assertTrue(pm.positions["ABCUSDT"].stop_loss_widened)
+
+    def test_track_defaults_stop_loss_widened_to_false(self):
+        """execute_entry 등 신규 진입 경로는 이 인자를 안 넘기므로 기존과 동일하게 False."""
+        c = cfg()
+        pm = PositionManager(c)
+        pm.track("ABCUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0)
+        self.assertFalse(pm.positions["ABCUSDT"].stop_loss_widened)
+
+    def test_restored_position_past_grace_narrows_immediately_on_next_check(self):
+        """재시작으로 복원된 포지션(entered_at=원래 진입시각, widened=True)이 이미 유예기간을
+        지난 상태라면, compute_stop_loss_pct가 즉시 '더 이상 넓지 않음'을 반환해야 한다
+        (main.py의 reconcile 루프가 이걸 보고 바로 원래 폭으로 좁힌다)."""
+        c = cfg()  # stop_loss_grace_sec = 45.0
+        pm = PositionManager(c)
+        # 진입한 지 100초 됐다고 가정(유예 45초를 훨씬 지남) — 재시작 시점이 여기 해당
+        original_entered_at = 1000.0
+        pm.track("ABCUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0,
+                  entered_at=original_entered_at, stop_loss_widened=True)
+        with patch("bot.main.time.time", return_value=original_entered_at + 100):
+            from bot.main import compute_stop_loss_pct
+            pct, still_widened = compute_stop_loss_pct(c, "LONG", pm.positions["ABCUSDT"].entered_at)
+        self.assertFalse(still_widened, "재시작 전 유예기간이 이미 끝났다면 복원 직후에도 넓은 상태가 아니어야 한다")
+        self.assertEqual(pct, 6.0)  # 원래 폭(넓히지 않은 값)
+
+
 if __name__ == "__main__":
     unittest.main()
