@@ -50,6 +50,91 @@ class TrackedPosition:
     # [2026-08-11 사용자요청] 진입 직후 유예기간 동안 손절폭을 넓혀 걸어뒀는지 여부 — True면
     # reconcile 루프가 유예기간 만료 시 원래 폭으로 다시 좁혀야 한다는 표시.
     stop_loss_widened: bool = False
+    # [2026-08-16] 지금 거래소 STOP_MARKET에 실제로 걸려 있는 손절폭(%). 중간 계단(stage2)이
+    # 생기면서 "완전히 풀릴 때 한 번만" 재등록하던 방식으로는 계단 전환이 반영되지 않아,
+    # 목표 폭과 비교해 계단마다 재등록할 수 있도록 현재 적용값을 기억한다. 0이면 미적용.
+    applied_stop_loss_pct: float = 0.0
+    # [2026-08-15 사용자요청] "V2 이후 실제로 스파이크 조기체결이 적용된 거래가 어느 건지
+    # 알 수가 없다"는 관찰성 문제 발견 — candidate["early_entry_spike"]가 execute_entry까지는
+    # 전달됐지만 포지션/거래기록엔 저장이 안 되고 있었다. 진입 시점에 여기 저장해서 청산 시
+    # TradeRecord에 그대로 실어보낸다.
+    early_entry_spike: bool = False
+    # [2026-08-25 관측] 진입 근거를 원장까지 실어보낸다. 지금까지 원장엔 진입 점수도
+    # 볼밴 관여 여부도 없어서 "순수 EMA 진입 vs 볼밴 관여 진입"의 손익 비교가 불가능했다
+    # (원칙 2 판정 불가). BB_PARTICIPATION_REQUIRED 효과 검증에 직접 쓰인다.
+    entry_score: float | None = None
+    entry_bb_event: bool | None = None
+    entry_width_expanding: bool | None = None
+    entry_rsi: float | None = None
+    entry_rsi_aligned: bool | None = None
+    # [2026-08-25] 순방향 분할 — 2차 추가를 이미 했는지, 그때 ROE가 얼마였는지.
+    # apply_average_down이 평단 변경 때문에 roe_at_* 관측값을 초기화하므로, 판정에 쓸
+    # 트리거 시점 ROE는 여기 따로 남긴다.
+    scale_in_done: bool = False
+    scale_in_trigger_roe: float | None = None
+    # [2026-08-25] 2차 체결 시각. 직후에 "작은 수익 익절"이 발동하면 2차 수수료만 내고
+    # 곧바로 청산되므로(AMBIGUOUS 창 60~180초가 2차 창과 겹친다), 짧은 쿨다운을 둔다.
+    scale_in_at: float = 0.0
+    # [2026-08-25 관측] 실제 진입 체결가. 청산 쪽(actual_fill_exit_price)만 배선돼 있어
+    # 진입 슬리피지/메이커 여부를 원장으로 검증할 수 없었다.
+    actual_fill_entry_price: float | None = None
+    # [2026-08-15 백테스트 검증 후 추가] 손절 유예 게이트 상태.
+    # sl_defer_until: 이 시각(epoch)까지는 손절 확정을 보류한다(0이면 유예 중 아님).
+    # sl_defer_start_roe: 유예를 시작한 시점의 ROE — 안전캡(추가손실 한도) 계산 기준점.
+    # sl_defer_used: 포지션당 1회만 유예한다(무한정 미루기 방지). 백테스트도 거래당 1회
+    #   유예만 시뮬레이션했으므로 그 설계와 일치시킨다.
+    # sl_defer_prev_stop_order_id: 유예 시작 시 넓혀 재등록하기 전의 원래 STOP_MARKET id.
+    sl_defer_until: float = 0.0
+    sl_defer_start_roe: float = 0.0
+    sl_defer_used: bool = False
+    sl_defer_prev_stop_order_id: str | None = None
+    # [2026-08-17 관측 전용] 손익비 복기용 계측 필드 — 청산 판단에는 일절 관여하지 않는다.
+    #
+    # 배경: 실현손익 보정 후 436건을 재집계했더니 순익 전체가 "봇 트레일링이 무장(armed)한
+    # 69건(+8.99USDT, 승률 98.6%)"에서 나오고, 무장 못 한 367건은 -16.76USDT였다. 그런데
+    # 무장 여부를 bot.log의 "트레일링 시작" 문자열로 역산할 수밖에 없어서(원장에 없음)
+    # 무장률 16%라는 수치의 신뢰도가 낮았고, "거래소 트레일링이 봇보다 먼저 닫아서 무장을
+    # 못 한 것"이라는 가설도 콜백폭 역산 추정으로만 뒷받침됐다.
+    #
+    # peak_pnl은 armed 이후에만 갱신되므로 "무장 전에 얼마나 올랐다가 닫혔는지"를 못 남긴다.
+    # 그래서 진입 시점부터 무조건 누적되는 관측값을 따로 둔다.
+    #
+    # max_favorable_roe / max_adverse_roe: 봇이 폴링으로 실제 관측한 최고/최저 ROE.
+    #   거래소가 먼저 닫으면 마지막 폴링 값에서 멈추므로, 실현 ROE와의 차이 자체가
+    #   "봇이 못 본 구간"의 크기가 된다(이것도 측정 대상이다).
+    # armed_at / armed_roe: 무장 시각과 그때의 ROE. 0이면 끝까지 무장 못 한 거래.
+    # evaluate_calls: 진입 후 evaluate()가 몇 번 돌았는지 — 무장 실패가 "가격이 안 왔다"인지
+    #   "폴링이 못 따라갔다"인지 구분하는 데 쓴다.
+    max_favorable_roe: float = 0.0
+    max_adverse_roe: float = 0.0
+    armed_at: float = 0.0
+    armed_roe: float = 0.0
+    evaluate_calls: int = 0
+    force_profit_extension_used: bool = False
+    # [2026-08-18 진입품질 규명용 관측 전용] 진입 후 특정 시점의 ROE 스냅샷.
+    #
+    # 배경: 관측 190건에서 "고점 ROE가 1.5%에 못 미친 거래" 65건(34.2%)이 승률 9.2%,
+    # 순익 -10.173으로 손실 전부를 만든다. 나머지 125건은 +7.291이라 이 34%만 없으면 흑자다.
+    # 그런데 진입 시점 피처로는 구분이 안 된다 — 확률/우선순위/강도/speed/total_score/
+    # mtf_agree/btc_mult 9개를 대조했더니 8개가 z<2로 무의미했고(확률은 불량 0.9420 vs
+    # 정상 0.9409), 유일하게 유의한 명목크기(z=-2.13)는 잔고가 컸던 시기 효과로 보인다.
+    #
+    # 그래서 **진입 후 짧은 구간**에 판별 가능한지를 본다. 지금 원장에는 전 구간 최고/최저만
+    # 있고 시간에 따른 궤적이 없어서, 30초/60초 시점 ROE를 남긴다.
+    # 이 값들은 **청산 판단에 일절 쓰지 않는다.** 측정 먼저, 규칙은 그다음이다.
+    # (2026-08-17에 "무조건 120/180초 후 컷"을 검증했다가 승률 -11~12%p로 기각한 이력이 있다.
+    #  그때는 측정 없이 자른 것이고, 이번엔 판별 가능성부터 잰다.)
+    # [2026-08-19 S2 조건부 시간컷 검증용] 120초 시점을 추가한다.
+    # 근거: V2 이후 629건에서 보유 2~5분 구간이 명목당 net -0.3818%로 유일하게 크게 나쁘다
+    # (~2분 +0.6307% / 5~15분 -0.1724% / 15분~ -0.3924%). 그 구간의 시작점이 120초다.
+    # 60초 신호는 2026-08-19에 사전등록 기준(탐지60%/오탐20%) 미달로 정식 기각했으나,
+    # 그건 **무조건 컷** 판별이었다. 이번에 재려는 것은 "120초 시점에 **아직 무장 못한**
+    # 거래"만 대상으로 하는 조건부 컷이며, 무장 거래(승률 98.8%, 명목당 net +1.0566%)는
+    # 절대 건드리지 않는다는 점이 다르다.
+    # 이 값도 **청산 판단에 일절 쓰지 않는다.** 측정 먼저, 규칙은 그다음.
+    roe_at_30s: float | None = None
+    roe_at_60s: float | None = None
+    roe_at_120s: float | None = None
 
     @property
     def protection_state(self) -> str:
@@ -90,6 +175,37 @@ def net_profit_usdt(pos: TrackedPosition, mark_price: float, cfg: Config) -> flo
     return gross - fee_estimate
 
 
+def grace_stop_multiplier(cfg, entered_at: float | None) -> float:
+    """진입 후 경과시간에 따른 손절폭 배수를 반환한다(단일 소스).
+
+    [2026-08-12 사고 이력] 이 계산이 bot/main.py와 bot/position_manager.py 두 곳에 복제돼
+    있었고, 한쪽만 유예를 반영해서 "거래소 주문은 넓혀뒀는데 폴링 체크는 좁은 폭으로 먼저
+    손절"하는 사고가 있었다(ONEUSDT ROE -3.04% 즉시청산). 그래서 이제 두 경로가 이 함수
+    하나만 쓰도록 통합한다.
+
+    [2026-08-16 중간 계단 추가] 유예 만료 시 배수를 1.0으로 한 번에 떨어뜨리면 그 순간
+    -base~-base*widen 구간의 포지션이 일제히 청산된다(실측: STOP_LOSS의 44.1%가 보유
+    170~200초에 집중). stage2를 두면 계단이 하나 더 생겨 한꺼번에 죽지 않는다.
+
+      0 ~ grace_sec         : grace_widen_mult
+      grace_sec ~ stage2_sec: stage2_mult
+      stage2_sec ~          : 1.0
+
+    entered_at=None은 "지금 막 진입하는 시점"으로 보고 항상 1단계(가장 넓은 폭)를 준다.
+    """
+    if cfg.stop_loss_grace_sec <= 0:
+        return 1.0
+    if entered_at is None:
+        return cfg.stop_loss_grace_widen_mult
+    elapsed = time.time() - entered_at
+    if elapsed < cfg.stop_loss_grace_sec:
+        return cfg.stop_loss_grace_widen_mult
+    # stage2가 유예시간보다 뒤에 있을 때만 중간 계단으로 동작(아니면 기존 2단계 그대로)
+    if cfg.stop_loss_grace_stage2_sec > cfg.stop_loss_grace_sec and elapsed < cfg.stop_loss_grace_stage2_sec:
+        return cfg.stop_loss_grace_stage2_mult
+    return 1.0
+
+
 class PositionManager:
     """포지션별 3~7% 익절 / -5% 손절 로직을 관리한다.
 
@@ -109,13 +225,15 @@ class PositionManager:
         먼저 손절을 발동시켜버려 유예기간이 사실상 무력화되는 사고가 있었다(ONEUSDT ROE
         -3.04%에서 즉시청산, 원래 유예중이면 6%까지 버텼어야 함). bot/main.py의
         compute_stop_loss_pct()와 동일한 유예 로직을 여기도 반영해서 두 경로가 항상 같은
-        기준을 쓰도록 맞춘다."""
+        기준을 쓰도록 맞춘다.
+
+        [2026-08-16] 복제로 인한 어긋남을 막기 위해 계산을 grace_stop_multiplier()로 통합했다
+        (중간 계단 stage2도 여기서 함께 반영된다)."""
         base = self.cfg.short_stop_loss_pct if side == "SHORT" and self.cfg.short_stop_loss_pct > 0 else self.cfg.stop_loss_pct
-        if self.cfg.stop_loss_grace_sec <= 0 or entered_at is None:
+        if entered_at is None:
+            # 기존 동작 유지: 추적정보가 없으면 유예를 적용하지 않고 기본 폭을 쓴다.
             return base
-        if (time.time() - entered_at) < self.cfg.stop_loss_grace_sec:
-            return base * self.cfg.stop_loss_grace_widen_mult
-        return base
+        return base * grace_stop_multiplier(self.cfg, entered_at)
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -181,6 +299,23 @@ class PositionManager:
                 self.global_consecutive_losses = data.get("global_consecutive_losses", 0)
                 self.global_pause_until = data.get("global_pause_until", 0.0)
                 self.recent_trade_results = data.get("recent_trade_results", [])[-100:]
+                # [2026-08-17] 심볼 블락 복원. 이미 만료된 항목은 버려 파일이 무한정 커지는
+                # 것을 막는다(만료된 블락을 되살리면 멀쩡한 심볼이 계속 막히는 부작용도 있다).
+                now = time.time()
+                raw_block = data.get("symbol_blacklist_until", {}) or {}
+                self.symbol_blacklist_until = {
+                    str(s): float(u) for s, u in raw_block.items()
+                    if isinstance(u, (int, float)) and float(u) > now
+                }
+                raw_streak = data.get("symbol_loss_streak", {}) or {}
+                self.symbol_loss_streak = {
+                    str(s): int(v) for s, v in raw_streak.items()
+                    if isinstance(v, (int, float)) and int(v) > 0
+                }
+                if self.symbol_blacklist_until:
+                    log.info("심볼 블락 복원: %d개 (%s)", len(self.symbol_blacklist_until),
+                              ", ".join(f"{s} {max(0, u - now) / 60:.0f}분남음"
+                                        for s, u in sorted(self.symbol_blacklist_until.items())[:5]))
                 log.info(
                     "이전 통계 복원: 거래=%d 승=%d 패=%d(롱 %d승%d패/숏 %d승%d패) 연속승리=%d 누적손익=%.2fUSDT",
                     self.total_trades, self.wins, self.losses,
@@ -211,6 +346,15 @@ class PositionManager:
                 "global_consecutive_losses": self.global_consecutive_losses,
                 "global_pause_until": self.global_pause_until,
                 "recent_trade_results": self.recent_trade_results[-100:],
+                # [2026-08-17 실거래 점검으로 발견] 심볼 블락(손실 후 재진입 차단 / 익절 후
+                # 쿨다운)이 인메모리에만 있어서 재시작마다 통째로 사라졌다. 블락은 최대
+                # symbol_blacklist_cooldown_min(기본 60분)까지 유지돼야 하는데, 재시작 간격이
+                # 그보다 짧으면(오늘 실측 30~50분 간격으로 4회 재시작) 차단이 무력화된다.
+                # symbol_loss_timestamps는 창이 30분으로 짧아 의도적으로 영속화하지 않는다는
+                # 기존 판단이 주석에 남아 있으나, 블락은 그 근거가 적용되지 않는다.
+                "symbol_blacklist_until": self.symbol_blacklist_until,
+                # 블락 판정의 입력이 되는 연속손실 카운터도 함께 살려야 일관된다.
+                "symbol_loss_streak": self.symbol_loss_streak,
             })
             tmp_path = STATS_FILE.with_suffix(".tmp")
             tmp_path.write_text(payload, encoding="utf-8")
@@ -301,10 +445,16 @@ class PositionManager:
                 self.global_consecutive_losses = 0
             streak = self.symbol_loss_streak.get(symbol, 0) + 1
             self.symbol_loss_streak[symbol] = streak
-            effective_blacklist_threshold = max(
-                self.cfg.symbol_blacklist_loss_threshold,
-                self.cfg.symbol_blacklist_min_loss_streak,
-            )
+            # [2026-08-17 실거래 복기] 예전엔 loss_threshold와 min_loss_streak를 max()로 묶어
+            # 사용해, 사용자가 loss_threshold=1로 낮춰도 min_loss_streak=3이 더 크면 실제 발동은
+            # 3연속 손실 뒤로 밀렸다. 설정을 더 공격적으로 낮췄는데 보호가 오히려 늦어지는 건
+            # 직관에도 맞지 않고, 열린 과제(손실 93%가 5심볼 집중)와도 정면 충돌한다.
+            # 연속손실 기반 격리는 "연속 몇 번 지면 막을지"를 정하는 주 설정값
+            # symbol_blacklist_loss_threshold를 우선 사용하고, 옛 min_loss_streak는 그 값이
+            # 비어 있거나 0 이하일 때만 하위호환 폴백으로 본다.
+            effective_blacklist_threshold = int(self.cfg.symbol_blacklist_loss_threshold)
+            if effective_blacklist_threshold <= 0:
+                effective_blacklist_threshold = int(self.cfg.symbol_blacklist_min_loss_streak)
             if streak >= effective_blacklist_threshold:
                 cooldown_until = time.time() + self.cfg.symbol_blacklist_cooldown_min * 60
                 self.symbol_blacklist_until[symbol] = cooldown_until
@@ -322,13 +472,27 @@ class PositionManager:
             loss_ts.append(now_ts)
             loss_ts[:] = [t for t in loss_ts if now_ts - t <= window_sec]
             if len(loss_ts) >= self.cfg.symbol_cooldown_loss_count:
-                cooldown_until = now_ts + self.cfg.symbol_cooldown_block_min * 60
-                if cooldown_until > self.symbol_blacklist_until.get(symbol, 0):
-                    self.symbol_blacklist_until[symbol] = cooldown_until
-                log.warning(
-                    "[%s] %.0f분 내 손실 %d회 — %.0f분 동안 이 심볼 재진입을 짧게 차단합니다",
-                    symbol, self.cfg.symbol_cooldown_window_min, len(loss_ts), self.cfg.symbol_cooldown_block_min,
-                )
+                # [2026-08-17 실거래 복기로 발견] 예전엔 block_min이 0이어도 "0분 동안 재진입을
+                # 짧게 차단합니다"를 WARNING으로 남겼다. 실제로는 cooldown_until이 now_ts와 같아
+                # 아무것도 막지 않는데 로그만 보면 차단된 것처럼 읽힌다.
+                # 실측(2026-08-17 야간): PORTALUSDT 2회/HUSDT 1회 이 로그가 떴는데 전부 즉시
+                # 재진입이 허용됐고, 그중 PORTALUSDT는 6거래 5손실 -1.24USDT였다. 복기하는 쪽에서
+                # "차단이 걸렸는데도 왜 재진입됐나"를 쫓다가 시간을 버린다.
+                # SYMBOL_COOLDOWN_BLOCK_MIN=0은 8/14 사용자요청 원복값(버그 아님, .env 693행)이라
+                # 동작은 그대로 두고 로그만 사실과 맞춘다.
+                if self.cfg.symbol_cooldown_block_min > 0:
+                    cooldown_until = now_ts + self.cfg.symbol_cooldown_block_min * 60
+                    if cooldown_until > self.symbol_blacklist_until.get(symbol, 0):
+                        self.symbol_blacklist_until[symbol] = cooldown_until
+                    log.warning(
+                        "[%s] %.0f분 내 손실 %d회 — %.0f분 동안 이 심볼 재진입을 짧게 차단합니다",
+                        symbol, self.cfg.symbol_cooldown_window_min, len(loss_ts), self.cfg.symbol_cooldown_block_min,
+                    )
+                else:
+                    log.info(
+                        "[%s] %.0f분 내 손실 %d회 — 단기 차단은 비활성(SYMBOL_COOLDOWN_BLOCK_MIN=0)이라 재진입 허용",
+                        symbol, self.cfg.symbol_cooldown_window_min, len(loss_ts),
+                    )
             actual_roe = abs(pnl_pct_value) * leverage
             if actual_roe >= self.cfg.stop_loss_pct * self.cfg.slippage_quarantine_multiplier:
                 slippage_cooldown_until = time.time() + self.cfg.slippage_quarantine_cooldown_min * 60
@@ -469,7 +633,8 @@ class PositionManager:
         ratio = min(ratio, max_ratio)
 
         if symbol:
-            loss_streak = self.symbol_loss_streak.get(symbol, 0)
+            reentry_ctx = self.get_same_symbol_reentry_context(symbol)
+            loss_streak = int(reentry_ctx["loss_streak"])
             if loss_streak > 0:
                 loss_mult = self.cfg.loss_reentry_size_mult ** loss_streak
                 loss_mult = max(self.cfg.loss_reentry_min_mult, min(1.0, loss_mult))
@@ -478,19 +643,35 @@ class PositionManager:
                     "[%s] 최근 손실 %d회 — 거래는 유지하되 재진입 비중 %.0f%% 적용",
                     symbol, loss_streak, loss_mult * 100,
                 )
-            prev = self.symbol_recent_ratio.get(symbol)
-            if prev is not None:
-                prev_ratio, entered_at = prev
-                window_sec = self.cfg.same_symbol_reentry_window_min * 60
-                if time.time() - entered_at <= window_sec:
-                    cap = prev_ratio * self.cfg.same_symbol_reentry_ratio_mult
-                    if ratio > cap:
-                        log.info(
-                            "[%s] %.0f분 내 재진입 감지(직전 비중 %.0f%%) — 비중을 %.0f%%로 축소",
-                            symbol, self.cfg.same_symbol_reentry_window_min, prev_ratio * 100, cap * 100,
-                        )
-                        ratio = cap
+            if reentry_ctx["recent_reentry"]:
+                prev_ratio = float(reentry_ctx["prev_ratio"])
+                cap = prev_ratio * self.cfg.same_symbol_reentry_ratio_mult
+                if ratio > cap:
+                    log.info(
+                        "[%s] %.0f분 내 재진입 감지(직전 비중 %.0f%%) — 비중을 %.0f%%로 축소",
+                        symbol, self.cfg.same_symbol_reentry_window_min, prev_ratio * 100, cap * 100,
+                    )
+                    ratio = cap
         return ratio
+
+    def get_same_symbol_reentry_context(self, symbol: str) -> dict[str, float | bool | int]:
+        prev = self.symbol_recent_ratio.get(symbol)
+        if prev is None:
+            return {
+                "recent_reentry": False,
+                "prev_ratio": 0.0,
+                "seconds_since_entry": float("inf"),
+                "loss_streak": int(self.symbol_loss_streak.get(symbol, 0)),
+            }
+        prev_ratio, entered_at = prev
+        seconds_since_entry = time.time() - entered_at
+        window_sec = self.cfg.same_symbol_reentry_window_min * 60
+        return {
+            "recent_reentry": seconds_since_entry <= window_sec,
+            "prev_ratio": float(prev_ratio),
+            "seconds_since_entry": float(seconds_since_entry),
+            "loss_streak": int(self.symbol_loss_streak.get(symbol, 0)),
+        }
 
     def record_entry_ratio(self, symbol: str, ratio: float):
         """이번 진입에 실제로 쓴 비중을 기록한다 (다음 재진입 시 축소 판단용)."""
@@ -498,15 +679,35 @@ class PositionManager:
 
     def track(self, symbol: str, side: str, entry_price: float, quantity: float, leverage: float = 1.0,
               origin: str = "bot", balance_at_entry: float | None = None,
-              entered_at: float | None = None, stop_loss_widened: bool = False):
+              entered_at: float | None = None, stop_loss_widened: bool = False,
+              early_entry_spike: bool = False,
+              entry_score: float | None = None,
+              entry_bb_event: bool | None = None,
+              entry_width_expanding: bool | None = None,
+              entry_rsi: float | None = None,
+              entry_rsi_aligned: bool | None = None,
+              scale_in_done: bool = True,   # [2026-08-25 불타기 방지] 기본은 "2차 없음"이 안전하다
+              actual_fill_entry_price: float | None = None):
         """[2026-08-14 실측 사고] entered_at/stop_loss_widened를 명시적으로 넘길 수 있게 해서,
         재시작 시 복원되는 포지션이 실제 최초 진입시각을 유지하고(기본값인 '지금'으로 리셋되지
         않게) 유예기간(180초) 경과 여부가 재시작과 무관하게 정확히 판정되도록 한다 — 신규
-        진입(execute_entry 등)은 이 인자를 안 넘겨서 기존과 동일하게 entered_at=지금, widened=False."""
+        진입(execute_entry 등)은 이 인자를 안 넘겨서 기존과 동일하게 entered_at=지금, widened=False.
+        early_entry_spike: [2026-08-15] 진입 시 스파이크 조기체결(aggressive fill)이 실제로
+        적용됐는지 — TradeRecord까지 그대로 이어져서 사후 분석 가능하게 한다."""
         pos = TrackedPosition(symbol, side, entry_price, quantity, leverage=leverage, origin=origin)
         if entered_at is not None:
             pos.entered_at = entered_at
         pos.stop_loss_widened = stop_loss_widened
+        pos.early_entry_spike = early_entry_spike
+        pos.entry_score = entry_score
+        pos.entry_bb_event = entry_bb_event
+        pos.entry_width_expanding = entry_width_expanding
+        pos.entry_rsi = entry_rsi
+        pos.entry_rsi_aligned = entry_rsi_aligned
+        # [2026-08-25 불타기 방지] 1차 분할이 실제로 적용되지 않았으면(전량 진입 폴백,
+        # 재시작 복원 등) 2차 추가를 원천 차단한다 — 안 그러면 총 노출이 계획을 넘는다.
+        pos.scale_in_done = scale_in_done
+        pos.actual_fill_entry_price = actual_fill_entry_price
         if balance_at_entry:
             # [2026-08-10] 진입 시점 잔고를 기준으로 물타기 총상한을 미리 확정해둔다 — 나중에
             # should_average_down에서 처음 발견할 때 계산하는 것보다, "이 포지션을 열 때의
@@ -561,6 +762,36 @@ class PositionManager:
         trigger_roe = -side_stop_loss_pct * depth_ratio
         return trigger_roe >= roe > -side_stop_loss_pct
 
+    def apply_scale_in(self, symbol: str, new_entry_price: float, new_quantity: float,
+                       added_margin_usdt: float = 0.0, current_roe: float = 0.0):
+        """순방향 분할 2차 체결 후 추적 정보를 갱신한다.
+
+        [2026-08-25] apply_average_down을 쓰면 안 된다. 그건 평단이 "나빠지는" 물타기용이라
+        armed / peak_pnl / max_favorable_roe / roe_at_* 를 전부 리셋하는데, 순방향 분할에
+        그대로 쓰면 부작용이 생긴다:
+          - armed=False 리셋 -> UNARMED_MID_HOLD_CUT(6~8분, 무장 못 하면 컷) 발동 확률 상승
+          - peak_pnl=0 리셋  -> 이미 찍은 고점이 사라져 트레일링 익절이 지연
+          - roe_at_* 리셋    -> 원장 판정용 관측값 소실(2차 진입 건을 사후 분석 못 함)
+        그래서 관측값과 무장 상태는 보존한다.
+
+        단 peak_pnl만은 새 평단 기준으로 다시 잡는다. 평단이 바뀌면 ROE의 기준점 자체가
+        바뀌는데, 옛 기준 고점을 그대로 두면 새 기준 ROE와 비교돼 "고점 대비 하락"이
+        즉시 성립해 트레일링이 헛발동한다.
+        """
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return
+        pos.entry_price = new_entry_price
+        pos.quantity = new_quantity
+        pos.total_margin_added_usdt += added_margin_usdt
+        pos.peak_pnl = max(0.0, float(current_roe))
+        log.info(
+            "[%s] 순방향 분할 2차 반영 — 평단 %s 수량 %s (무장=%s 고점ROE=%.2f%% 유지, "
+            "트레일링 기준점만 %.2f%%로 재설정)",
+            symbol, new_entry_price, new_quantity, pos.armed,
+            float(getattr(pos, "max_favorable_roe", 0.0) or 0.0), pos.peak_pnl,
+        )
+
     def apply_average_down(self, symbol: str, new_entry_price: float, new_quantity: float, added_margin_usdt: float = 0.0):
         """물타기 주문 체결 후, 거래소에서 갱신된 평단가/수량으로 추적 정보를 업데이트한다.
         added_margin_usdt는 이번에 실제로 추가된 증거금(호출부가 계산해서 넘김) — 누적
@@ -574,6 +805,15 @@ class PositionManager:
         pos.total_margin_added_usdt += added_margin_usdt
         pos.armed = False
         pos.peak_pnl = 0.0
+        # 평단가가 바뀌면 ROE의 기준점 자체가 바뀌므로 관측값도 같이 초기화한다
+        # (안 그러면 옛 평단가 기준 고점이 새 기준 값과 섞여 복기가 무의미해진다).
+        pos.max_favorable_roe = 0.0
+        pos.max_adverse_roe = 0.0
+        pos.armed_at = 0.0
+        pos.armed_roe = 0.0
+        pos.roe_at_30s = None
+        pos.roe_at_60s = None
+        pos.roe_at_120s = None
         log.info(
             "[%s] 물타기 반영(%d번째): 새 평단가=%s 수량=%s 누적추가증거금=%.2fUSDT (상한 %.2fUSDT)",
             symbol, pos.average_down_count, new_entry_price, new_quantity,
@@ -581,6 +821,44 @@ class PositionManager:
         )
 
     def evaluate(
+        self, symbol: str, mark_price: float, momentum_continuing: bool = False, swing_continuing: bool = False
+    ) -> str | None:
+        """[2026-08-17] 관측 계측만 덧붙인 얇은 래퍼. 판단은 전부 _evaluate_inner가 하고
+        여기서는 반환값을 그대로 통과시킨다 — 계측 코드가 실패해도 청산 판단이 바뀌면 안 되므로
+        예외를 삼키고, 무장 시각 기록은 finally에서 하여 조기 return 경로도 빠짐없이 잡는다.
+
+        (armed를 세우는 지점이 _evaluate_inner 안에 네 군데라 각각에 기록을 심으면 하나를
+        빠뜨리기 쉽다. 진입/이탈 한 곳에서만 관측하도록 래퍼로 분리했다.)"""
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return self._evaluate_inner(symbol, mark_price, momentum_continuing, swing_continuing)
+        was_armed = pos.armed
+        try:
+            roe = pnl_pct(pos.entry_price, mark_price, pos.side) * pos.leverage
+            pos.evaluate_calls += 1
+            if roe > pos.max_favorable_roe:
+                pos.max_favorable_roe = roe
+            if roe < pos.max_adverse_roe:
+                pos.max_adverse_roe = roe
+            # 진입 후 경과시간이 기준선을 처음 넘은 폴링에서 한 번만 찍는다(폴링 주기가
+            # 약 5초라 30/60초에 정확히 맞지 않는다 — 그 직후 첫 관측값을 쓴다).
+            elapsed = time.time() - pos.entered_at
+            if pos.roe_at_30s is None and elapsed >= 30:
+                pos.roe_at_30s = roe
+            if pos.roe_at_60s is None and elapsed >= 60:
+                pos.roe_at_60s = roe
+            if pos.roe_at_120s is None and elapsed >= 120:
+                pos.roe_at_120s = roe
+        except Exception:  # 계측 실패가 청산 판단을 막아선 안 된다
+            roe = None
+        try:
+            return self._evaluate_inner(symbol, mark_price, momentum_continuing, swing_continuing)
+        finally:
+            if roe is not None and pos.armed and not was_armed and not pos.armed_at:
+                pos.armed_at = time.time()
+                pos.armed_roe = roe
+
+    def _evaluate_inner(
         self, symbol: str, mark_price: float, momentum_continuing: bool = False, swing_continuing: bool = False
     ) -> str | None:
         """'TAKE_PROFIT', 'STOP_LOSS', 'TIME_STOP' 중 하나를 반환하거나, 유지 시 None.
@@ -629,7 +907,25 @@ class PositionManager:
         # 거의 영향 없음.
         if self.cfg.force_profit_exit_max_hold_min > 0:
             held_minutes = (time.time() - pos.entered_at) / 60
-            if held_minutes >= self.cfg.force_profit_exit_max_hold_min and roe >= self.cfg.force_profit_exit_min_roe:
+            force_exit_hold_min = self.cfg.force_profit_exit_max_hold_min
+            if (
+                getattr(self.cfg, "force_profit_trend_exception_enabled", True)
+                and not pos.force_profit_extension_used
+                and held_minutes >= self.cfg.force_profit_exit_max_hold_min
+                and roe >= max(self.cfg.force_profit_exit_min_roe, getattr(self.cfg, "force_profit_trend_exception_min_roe", 2.5))
+                and momentum_continuing
+                and swing_continuing
+            ):
+                force_exit_hold_min += max(0.0, float(getattr(self.cfg, "force_profit_trend_exception_extend_min", 6.0)))
+                pos.force_profit_extension_used = True
+                log.info(
+                    "[%s] 강한 3분봉 추세 예외 — 순환 강제익절 1회 %.1f분 연장: 보유%.1f분 ROE=%.2f%%",
+                    symbol,
+                    max(0.0, float(getattr(self.cfg, "force_profit_trend_exception_extend_min", 6.0))),
+                    held_minutes,
+                    roe,
+                )
+            if held_minutes >= force_exit_hold_min and roe >= self.cfg.force_profit_exit_min_roe:
                 if momentum_continuing:
                     log.info(
                         "[%s] 순환매매 강제익절 조건 충족했지만 모멘텀 지속 중 — 이번 주기 보류: "
@@ -639,7 +935,7 @@ class PositionManager:
                 else:
                     log.info(
                         "[%s] 순환매매 강제익절: 보유%.1f분(기준%.0f분 초과) ROE=%.2f%%(기준%.2f%% 이상)",
-                        symbol, held_minutes, self.cfg.force_profit_exit_max_hold_min, roe, self.cfg.force_profit_exit_min_roe,
+                        symbol, held_minutes, force_exit_hold_min, roe, self.cfg.force_profit_exit_min_roe,
                     )
                     return "TAKE_PROFIT"
 
@@ -693,7 +989,11 @@ class PositionManager:
             # "숏만 즉시확정"하던 예전(추세추종 시절) 비대칭을 없애고 트레일링을 양쪽에 동일 적용.
             # 72시간/300심볼 백테스트: 즉시확정(8%)보다 트레일링이 두 표본 모두에서 순이익 개선됨
             # (표본A 평균순ROE +3.10%->+3.57%, 표본B +1.61%->+1.62~1.67%, 3%p 기준).
-            take_profit_min = self.cfg.short_take_profit_min if pos.side == "SHORT" else self.cfg.take_profit_min
+            base_take_profit_min = self.cfg.short_take_profit_min if pos.side == "SHORT" else self.cfg.take_profit_min
+            entry_fee = self.cfg.fee_rate_maker if getattr(self.cfg, "limit_entry_enabled", False) else self.cfg.fee_rate_taker
+            exit_fee = self.cfg.fee_rate_maker if getattr(self.cfg, "limit_exit_enabled", False) else self.cfg.fee_rate_taker
+            fee_floor_roe = (entry_fee + exit_fee) * 100 * max(pos.leverage, 1.0)
+            take_profit_min = max(base_take_profit_min, fee_floor_roe + max(0.0, getattr(self.cfg, "min_net_take_profit_roe", 0.0)))
             if roe >= take_profit_min:
                 min_profit_usdt = margin_used * (take_profit_min / 100)
                 # 수수료 실비(fee_estimate)만큼만 여유를 두고 확인한다.
@@ -748,6 +1048,23 @@ class PositionManager:
         # roe > -stop_loss_pct라는 뜻 — 그 전체 손실 구간을 시간제한 대상으로 잡아야 사각지대가 없다.
         if roe > -side_stop_loss_pct:
             held_minutes = (time.time() - pos.entered_at) / 60
+            if (
+                getattr(self.cfg, "stagnation_time_stop_enabled", True)
+                and not pos.armed
+                and held_minutes >= max(0.0, float(getattr(self.cfg, "stagnation_time_stop_min_hold_min", 10.0)))
+            ):
+                stagnation_min_roe = float(getattr(self.cfg, "stagnation_time_stop_min_roe", -1.0))
+                stagnation_max_roe = float(getattr(self.cfg, "stagnation_time_stop_max_roe", 0.6))
+                if stagnation_min_roe <= roe <= stagnation_max_roe:
+                    log.info(
+                        "[%s] 장기 정체 포지션 정리: 보유%.1f분 ROE=%.2f%% (허용 %.2f%%~%.2f%%)",
+                        symbol,
+                        held_minutes,
+                        roe,
+                        stagnation_min_roe,
+                        stagnation_max_roe,
+                    )
+                    return "TIME_STOP"
             if held_minutes >= self.cfg.scalp_max_hold_minutes:
                 log.info(
                     "[%s] 스캘핑 최대 보유시간(%.0f분) 초과 — 방향성 없어 슬롯 정리: ROE=%.2f%% (%.0f분 경과)",

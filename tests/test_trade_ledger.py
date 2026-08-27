@@ -45,11 +45,17 @@ class TradeLedgerTests(unittest.TestCase):
     def test_append_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ledger.jsonl"
-            append_trade_record(make_record(), path=path)
+            append_trade_record(
+                make_record(protection_state="STOP_ONLY", applied_stop_loss_pct=6.0, sl_defer_active=True),
+                path=path,
+            )
             records = load_trade_records(path)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["symbol"], "TESTUSDT")
             self.assertEqual(records[0]["exit_reason"], "TAKE_PROFIT")
+            self.assertEqual(records[0]["protection_state"], "STOP_ONLY")
+            self.assertEqual(records[0]["applied_stop_loss_pct"], 6.0)
+            self.assertTrue(records[0]["sl_defer_active"])
 
     def test_multiple_records_append_in_order(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,6 +70,9 @@ class TradeLedgerTests(unittest.TestCase):
         self.assertIsNone(rec.actual_fill_entry_price)
         self.assertIsNone(rec.commission_usdt)
         self.assertIsNone(rec.slippage_pct)
+        self.assertIsNone(rec.protection_state)
+        self.assertEqual(rec.applied_stop_loss_pct, 0.0)
+        self.assertFalse(rec.sl_defer_active)
 
     def test_load_missing_file_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:

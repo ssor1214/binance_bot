@@ -10,11 +10,26 @@ from bot.position_manager import PositionManager
 
 
 def cfg() -> Config:
+    """[2026-08-16] stage2(중간 계단)를 명시적으로 끈다.
+
+    이 파일은 "유예 → 기본폭" 2단계 동작의 기준선을 검증하는 곳이다. Config()는 라이브
+    .env를 읽으므로 stage2_sec=250을 그대로 물려받는데, 그러면 여기서 쓰는 경과시간
+    (50초/100초)이 전부 중간 계단 구간(45~250초)에 들어가 의도와 다른 것을 재게 된다.
+    stage2가 켜졌을 때의 3단계 동작은 tests/test_grace_stage2.py가 별도로 검증한다."""
     c = Config()
     c.stop_loss_pct = 6.0
     c.short_stop_loss_pct = 3.0
     c.stop_loss_grace_sec = 45.0
     c.stop_loss_grace_widen_mult = 1.5
+    c.stop_loss_grace_stage2_sec = 0.0
+    return c
+
+
+def cfg_with_stage2() -> Config:
+    """중간 계단이 켜진 설정 — 같은 픽스처로 2단계/3단계를 비교하기 위한 것."""
+    c = cfg()
+    c.stop_loss_grace_stage2_sec = 120.0
+    c.stop_loss_grace_stage2_mult = 1.2
     return c
 
 
@@ -43,6 +58,20 @@ class StopLossGracePeriodTests(unittest.TestCase):
     def test_after_grace_window_not_widened(self):
         c = cfg()
         with patch("bot.main.time.time", return_value=1000.0 + 50):  # 50초 경과(45초 초과)
+            pct, widened = compute_stop_loss_pct(c, "LONG", entered_at=1000.0)
+        self.assertEqual(pct, 6.0)
+        self.assertFalse(widened)
+
+    def test_stage2_inserts_intermediate_step_after_grace(self):
+        """[2026-08-16] 중간 계단이 켜져 있으면 유예 직후 곧바로 기본폭으로 떨어지지 않는다.
+        실거래에서 STOP_LOSS의 44.1%가 유예 만료 직후(보유 170~200초)에 몰린 것이 계기다."""
+        c = cfg_with_stage2()  # grace 45초, stage2 120초/1.2배
+        with patch("bot.main.time.time", return_value=1000.0 + 50):  # 유예 직후
+            pct, widened = compute_stop_loss_pct(c, "LONG", entered_at=1000.0)
+        self.assertEqual(pct, 6.0 * 1.2, "유예 직후엔 중간 계단 폭이어야 한다")
+        self.assertTrue(widened, "중간 계단도 기본폭보다 넓으므로 재타이트 로직이 계속 돌아야 한다")
+
+        with patch("bot.main.time.time", return_value=1000.0 + 130):  # stage2도 지남
             pct, widened = compute_stop_loss_pct(c, "LONG", entered_at=1000.0)
         self.assertEqual(pct, 6.0)
         self.assertFalse(widened)

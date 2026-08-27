@@ -80,6 +80,19 @@ class PositionSizingDefenseTests(unittest.TestCase):
         pm.record_result("XYZUSDT", -1.0, -0.2, side="LONG")
         self.assertTrue(pm.is_symbol_blacklisted("XYZUSDT"))
 
+    def test_symbol_blacklist_loss_threshold_applies_without_being_overridden_by_min_loss_streak(self):
+        """loss_threshold를 더 낮췄다면 그 의도가 그대로 발동 시점에 반영돼야 한다."""
+        pm = self.make_manager()
+        pm.cfg.symbol_blacklist_loss_threshold = 1
+        pm.cfg.symbol_blacklist_min_loss_streak = 3
+        pm.cfg.symbol_cooldown_loss_count = 99  # 연속손실 규칙만 분리해서 확인
+
+        pm.record_result("FASTCUTUSDT", -1.0, -0.2, side="LONG")
+        self.assertTrue(
+            pm.is_symbol_blacklisted("FASTCUTUSDT"),
+            "loss_threshold=1이면 min_loss_streak=3에 가로막히지 않고 첫 손실 뒤 바로 차단돼야 한다",
+        )
+
     def test_short_size_recovers_when_recent_short_results_are_positive(self):
         pm = self.make_manager()
         self.assertAlmostEqual(pm.direction_size_multiplier("SHORT"), 0.6)
@@ -102,6 +115,17 @@ class PositionSizingDefenseTests(unittest.TestCase):
             pm.record_result(f"X{i}USDT", -1.0, -0.2, side="LONG")
 
         self.assertAlmostEqual(pm.recent_performance_size_multiplier(), 0.75)
+
+    def test_same_symbol_reentry_context_reports_recent_loss_streak(self):
+        pm = self.make_manager()
+        pm.record_entry_ratio("ABCUSDT", 0.20)
+        pm.record_result("ABCUSDT", -1.0, -0.2, side="SHORT")
+
+        ctx = pm.get_same_symbol_reentry_context("ABCUSDT")
+
+        self.assertTrue(ctx["recent_reentry"])
+        self.assertEqual(ctx["loss_streak"], 1)
+        self.assertAlmostEqual(ctx["prev_ratio"], 0.20)
 
     def test_negative_structural_ev_reduces_size_without_blocking_frequency(self):
         pm = self.make_manager()

@@ -39,8 +39,14 @@ class CriticalBalanceStopTests(unittest.TestCase):
         self.assertFalse(is_critical_balance_stop(1.0, cfg))
 
     def test_default_is_5_usdt(self):
+        """[2026-08-15 사용자요청] "자산 보호모드 해제해줘 지금" — 총자산이 4.64USDT로 절대
+        하한선(5.0)에 걸려 신규진입이 전면 차단된 상태에서, 사용자가 즉시 해제를 요청해
+        .env의 CRITICAL_BALANCE_STOP_USDT를 5.0->0(비활성화)으로 변경함. 이 테스트는 원래
+        .env 실제값(=사실상 "기본값")이 5.0이길 기대했는데, 그 실제값 자체가 바뀌었으므로
+        기대값도 함께 갱신. 다른 테스트들은 전부 cfg.critical_balance_stop_usdt를 명시적으로
+        오버라이드해서 이 변경과 무관하게 그대로 통과함(기능 자체는 안 건드림). 원복시 5.0으로."""
         cfg = Config()
-        self.assertEqual(cfg.critical_balance_stop_usdt, 5.0)
+        self.assertEqual(cfg.critical_balance_stop_usdt, 0.0)
 
     def test_blocks_entry_even_when_low_balance_recovery_would_normally_allow_it(self):
         """저잔고 복구모드(17달러 미만 고확률 후보 허용)조차 절대 하한선 밑에서는 무시돼야 한다."""

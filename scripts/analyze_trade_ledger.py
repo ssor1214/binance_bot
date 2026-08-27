@@ -4,7 +4,7 @@
 `bot/trade_ledger.py`/`bot/position_manager.py` 문서화 참고(스키마가 계속 늘어나도
 마이그레이션 없이 호환됨).
 
-실행: python scripts/analyze_trade_ledger.py [--since "2026-08-10 14:31"] [--bot-only]
+실행: python scripts/analyze_trade_ledger.py [--since "2026-08-10 14:31"] [--bot-only] [--external-close-loss-report]
 실 API를 호출하지 않고 로컬 logs/trade_ledger.jsonl만 읽는다."""
 from __future__ import annotations
 
@@ -52,10 +52,67 @@ def summarize(df: pd.DataFrame, label: str = "전체") -> None:
           f"평균이익={avg_win:.4f} 평균손실={avg_loss:.4f} 손익비={profit_factor:.2f}")
 
 
+def print_external_close_loss_report(df: pd.DataFrame) -> None:
+    """EXTERNAL_CLOSE_LOSS만 분리해, 사후분류 손실의 패턴을 빠르게 복기한다."""
+    subset = df[df["exit_reason"] == "EXTERNAL_CLOSE_LOSS"].copy()
+    if subset.empty:
+        print("\n=== EXTERNAL_CLOSE_LOSS 전용 리포트 ===")
+        print("대상 거래가 없습니다.")
+        return
+
+    print("\n=== EXTERNAL_CLOSE_LOSS 전용 리포트 ===")
+    print(
+        f"거래수={len(subset)} 누적손익={subset['estimated_pnl_usdt'].sum():+.3f}USDT "
+        f"평균손익={subset['estimated_pnl_usdt'].mean():.4f}"
+    )
+
+    print("\n[방향별]")
+    by_side = subset.groupby("side").agg(
+        거래수=("estimated_pnl_usdt", "count"),
+        손익=("estimated_pnl_usdt", "sum"),
+        평균=("estimated_pnl_usdt", "mean"),
+    )
+    print(by_side.to_string())
+
+    print("\n[레버리지별]")
+    by_leverage = subset.groupby("leverage").agg(
+        거래수=("estimated_pnl_usdt", "count"),
+        손익=("estimated_pnl_usdt", "sum"),
+        평균=("estimated_pnl_usdt", "mean"),
+    ).sort_index()
+    print(by_leverage.to_string())
+
+    if "protection_state" in subset.columns:
+        print("\n[보호상태별]")
+        prot = subset.groupby(subset["protection_state"].fillna("UNKNOWN")).agg(
+            거래수=("estimated_pnl_usdt", "count"),
+            손익=("estimated_pnl_usdt", "sum"),
+            평균=("estimated_pnl_usdt", "mean"),
+        ).sort_values("손익")
+        print(prot.to_string())
+
+    print("\n[손실 심볼 TOP10]")
+    worst = subset.groupby("symbol").agg(
+        거래수=("estimated_pnl_usdt", "count"),
+        손익=("estimated_pnl_usdt", "sum"),
+        평균=("estimated_pnl_usdt", "mean"),
+    ).sort_values("손익").head(10)
+    print(worst.to_string())
+
+    print("\n[최근 샘플 10건]")
+    cols = [c for c in [
+        "entered_dt", "symbol", "side", "estimated_pnl_usdt", "leverage",
+        "protection_state", "stop_loss_widened", "applied_stop_loss_pct",
+        "sl_defer_used", "sl_defer_active",
+    ] if c in subset.columns]
+    print(subset.sort_values("entered_dt")[cols].tail(10).to_string(index=False))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--since", type=str, default=None, help="이 시각 이후 거래만(예: '2026-08-10 14:31')")
     parser.add_argument("--bot-only", action="store_true", help="봇이 직접 진입한 거래만(수동 진입 제외)")
+    parser.add_argument("--external-close-loss-report", action="store_true", help="EXTERNAL_CLOSE_LOSS 전용 복기 리포트 추가")
     args = parser.parse_args()
 
     df = load_ledger()
@@ -86,6 +143,9 @@ def main():
         손익=("estimated_pnl_usdt", "sum"),
     )
     print(hourly.to_string())
+
+    if args.external_close_loss_report:
+        print_external_close_loss_report(df)
 
 
 if __name__ == "__main__":

@@ -475,6 +475,13 @@ def main() -> None:
     parser.add_argument("--min-atr-vs-stop-ratio", type=float, default=0.8)
     parser.add_argument("--max-atr-vs-stop-ratio", type=float, default=4.0)
     parser.add_argument("--short-stop-roe-pct", type=float, default=5.0)
+    # [2026-08-19] 손절폭 검증용. 기존엔 Settings 기본값 5.0으로 고정돼 CLI로 못 바꿨다.
+    # 라이브 .env는 STOP_LOSS_PCT=6.0이라 기본값과 어긋나 있었다.
+    parser.add_argument("--stop-roe-pct", type=float, default=5.0)
+    # [2026-08-19] 보유시간 연장 검증용. 무장선/트레일폭/하드캡 모두 CLI 노출이 없었다.
+    parser.add_argument("--take-profit-roe-pct", type=float, default=3.0)
+    parser.add_argument("--hard-take-profit-roe-pct", type=float, default=7.0)
+    parser.add_argument("--trailing-drawdown-roe-pct", type=float, default=1.0)
     parser.add_argument("--funding-rate-8h", type=float, default=0.0); parser.add_argument("--average-down", action="store_true")
     parser.add_argument("--trade-sides", choices=("both", "long-only", "short-only"), default="both")
     parser.add_argument("--short-volume-ratio", type=float, default=2.6)
@@ -492,7 +499,10 @@ def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     print("OFFLINE MODE — no API/network access")
-    settings = Settings(fee_rate=args.fee_rate, slippage_bps=args.slippage_bps, funding_rate_8h=args.funding_rate_8h,
+    settings = Settings(stop_roe_pct=args.stop_roe_pct,
+                        take_profit_roe_pct=args.take_profit_roe_pct,
+                        hard_take_profit_roe_pct=args.hard_take_profit_roe_pct,
+                        trailing_drawdown_roe_pct=args.trailing_drawdown_roe_pct, fee_rate=args.fee_rate, slippage_bps=args.slippage_bps, funding_rate_8h=args.funding_rate_8h,
                         long_margin_fraction_mult=args.long_margin_fraction_mult,
                         short_margin_fraction_mult=args.short_margin_fraction_mult,
                         min_atr_vs_stop_ratio=args.min_atr_vs_stop_ratio,

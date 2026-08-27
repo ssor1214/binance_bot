@@ -48,3 +48,19 @@ qa_ws_watchdog_isolated/
 .pytest_cache/
 .coverage
 .mypy_cache/
+qa_ws_trade_testnet_isolated/
+
+# [2026-08-28] 대용량 데이터 캐시 — 코드가 아니라 재생성 가능한 산출물이다.
+# archive/binance_vision 391MB, scratch_kline_cache 50MB 등 총 442MB.
+archive/binance_vision/
+scratch_kline_cache/
+archive/scratch_scripts/*.json
+archive/scratch_scripts/*.log
+qa_ws_trade_worker_v2_isolated_*/
+qa_ws_trade_v2_testnet_isolated/
+*.lock
+
+# 분석 실행 중 만들어지는 임시 산출물(도구 자체는 추적한다)
+pytest_out.txt
+col.txt
+tier2_fetch.log

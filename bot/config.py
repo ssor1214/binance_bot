@@ -72,6 +72,12 @@ TUNABLE_PARAMS = {
     "SOFT_STOP_MIN_HOLD_SEC": ("soft_stop_min_hold_sec", float, 0.0, 180.0),
     "POSITION_SIZE_MIN": ("position_size_min", float, 0.05, 0.30),
     "POSITION_SIZE_MAX": ("position_size_max", float, 0.05, 0.30),
+    # [2026-08-15 사용자요청] 손절 유예 게이트 — 사용자가 텔레그램에서 직접 켜고/조절할 수 있게
+    # 화이트리스트에 포함한다(기본은 꺼짐).
+    "SL_DEFER_ENABLED": ("sl_defer_enabled", bool, None, None),
+    "SL_DEFER_SEC": ("sl_defer_sec", float, 0.0, 120.0),
+    "SL_DEFER_MIN_VOTES": ("sl_defer_min_votes", int, 1, 3),
+    "SL_DEFER_EXTRA_LOSS_CAP_PCT": ("sl_defer_extra_loss_cap_pct", float, 0.2, 3.0),
 }
 
 # TUNABLE_PARAMS 키를 텔레그램 화면에 표시할 때 쓰는 한글 설명. 영문 KEY 그대로 보여주면
@@ -102,6 +108,10 @@ TUNABLE_PARAMS_KO = {
     "SOFT_STOP_MIN_HOLD_SEC": "SOFT_STOP 최소 보유시간(초)",
     "POSITION_SIZE_MIN": "슬롯당 최소 비중",
     "POSITION_SIZE_MAX": "슬롯당 최대 비중",
+    "SL_DEFER_ENABLED": "손절 유예 게이트 사용여부",
+    "SL_DEFER_SEC": "손절 유예시간(초)",
+    "SL_DEFER_MIN_VOTES": "손절 유예 회복신호 표결수",
+    "SL_DEFER_EXTRA_LOSS_CAP_PCT": "손절 유예 안전캡(추가손실 ROE %p)",
 }
 
 
@@ -116,9 +126,9 @@ class Config:
     ])
     auto_symbols: bool = os.getenv("SYMBOLS", "BTCUSDT").strip().upper() == "AUTO"
     max_auto_symbols: int = _int("MAX_AUTO_SYMBOLS", 150)
-    interval: str = os.getenv("INTERVAL", "15m")
-    leverage_min: int = _int("LEVERAGE_MIN", 3)
-    leverage_max: int = _int("LEVERAGE_MAX", 5)
+    interval: str = os.getenv("INTERVAL", "3m")
+    leverage_min: int = _int("LEVERAGE_MIN", 4)
+    leverage_max: int = _int("LEVERAGE_MAX", 4)
     position_size_min: float = _float("POSITION_SIZE_MIN", 0.1)
     position_size_max: float = _float("POSITION_SIZE_MAX", 0.5)
     position_size_step: float = _float("POSITION_SIZE_STEP", 0.1)
@@ -146,6 +156,15 @@ class Config:
     low_balance_recovery_min_probability: float = _float("LOW_BALANCE_RECOVERY_MIN_PROBABILITY", 0.80)
     low_balance_recovery_min_score: float = _float("LOW_BALANCE_RECOVERY_MIN_SCORE", 0.68)
     low_balance_recovery_size_mult: float = _float("LOW_BALANCE_RECOVERY_SIZE_MULT", 0.75)
+    # [2026-08-16 hotfix] execute_entry()가 저잔고 복구 floor를 계산할 때 이 값을 참조하는데,
+    # Config에 필드가 빠져 있어 유효 후보가 전부 AttributeError로 버려지고 있었다. 별도
+    # env가 없으면 "기존 포지션 있을 때만 허용하는 완화 floor"와 같은 값(1.9)을 기본으로 둔다.
+    low_balance_recovery_min_margin_usdt: float = _float("LOW_BALANCE_RECOVERY_MIN_MARGIN_USDT", 1.9)
+    # [2026-08-22 사용자요청] 소액 계좌에서도 임시로 슬롯을 다시 열어 거래수를 확인하고 싶을 때,
+    # tiny-balance 1슬롯 강제와 저잔고 복구모드 슬롯 축소를 함께 우회하는 운영용 스위치.
+    # false면 기존 안전가드 그대로, true면 아래 개수만큼 슬롯을 강제로 쓴다.
+    temp_force_multi_slot_enabled: bool = _bool("TEMP_FORCE_MULTI_SLOT_ENABLED", "false")
+    temp_force_multi_slot_count: int = _int("TEMP_FORCE_MULTI_SLOT_COUNT", 4)
 
     # [2026-08-12 사용자요청] "자산이 5불만 남으면 거래 자체를 멈춰줘" — 저잔고 복구모드
     # (위, 기본 17달러 미만에서도 고확률 후보는 계속 진입)와 별개로, 이 절대 하한선
@@ -158,6 +177,12 @@ class Config:
     max_positions_low: int = _int("MAX_POSITIONS_LOW", 3)
     max_positions_high: int = _int("MAX_POSITIONS_HIGH", 8)
 
+    # [2026-08-25 배선 누락 수정] compute_max_positions()가 이 값을 getattr로 읽고
+    # tests/test_tiny_balance_slot_cap.py도 동작을 고정해두고 있는데, Config에 필드가 없어서
+    # .env의 TINY_BALANCE_SINGLE_SLOT_THRESHOLD가 조용히 무시되고 항상 0(비활성)이었다.
+    # 주의: compute_max_positions는 TEMP_FORCE_MULTI_SLOT_ENABLED를 먼저 보고 즉시 반환하므로,
+    # 그게 켜져 있는 동안에는 이 값이 여전히 적용되지 않는다.
+    tiny_balance_single_slot_threshold: float = _float("TINY_BALANCE_SINGLE_SLOT_THRESHOLD", 0.0)
     aggressive_balance_threshold: float = _float("AGGRESSIVE_BALANCE_THRESHOLD", 100.0)
     aggressive_max_positions: int = _int("AGGRESSIVE_MAX_POSITIONS", 3)
     aggressive_min_confirmations: int = _int("AGGRESSIVE_MIN_SIGNAL_CONFIRMATIONS", 2)
@@ -180,6 +205,14 @@ class Config:
     # 뜻. 0이면 비활성화(기존 동작 그대로).
     force_profit_exit_max_hold_min: float = _float("FORCE_PROFIT_EXIT_MAX_HOLD_MIN", 0.0)
     force_profit_exit_min_roe: float = _float("FORCE_PROFIT_EXIT_MIN_ROE", 1.5)
+    force_profit_trend_exception_enabled: bool = _bool("FORCE_PROFIT_TREND_EXCEPTION_ENABLED", "true")
+    force_profit_trend_exception_extend_min: float = _float("FORCE_PROFIT_TREND_EXCEPTION_EXTEND_MIN", 6.0)
+    force_profit_trend_exception_min_roe: float = _float("FORCE_PROFIT_TREND_EXCEPTION_MIN_ROE", 2.5)
+    worst_symbol_priority_penalty: float = _float("WORST_SYMBOL_PRIORITY_PENALTY", 0.05)
+    best_symbol_priority_boost: float = _float("BEST_SYMBOL_PRIORITY_BOOST", 0.03)
+    symbol_priority_review_hours: float = _float("SYMBOL_PRIORITY_REVIEW_HOURS", 72.0)
+    symbol_priority_review_min_sample: int = _int("SYMBOL_PRIORITY_REVIEW_MIN_SAMPLE", 3)
+    symbol_priority_top_n: int = _int("SYMBOL_PRIORITY_TOP_N", 5)
     # [2026-08-10 실거래 분석 발견] 거래소에 걸어둔 TRAILING_STOP_MARKET의 callbackRate를
     # 지금까지 trail_drawdown_pct와 정확히 같은 폭으로 계산해왔다 — 그런데 거래소 주문은
     # 틱 단위로 즉시 반응하고 봇은 폴링(타이머) 기반이라, 폭이 같으면 거래소가 사실상 항상
@@ -277,9 +310,53 @@ class Config:
 
     # 손실 중일 때, 추세 전환 신호(3개 중 이만큼)가 나오면 손절선까지 안 기다리고 조기 탈출
     reversal_min_votes: int = _int("REVERSAL_MIN_VOTES", 3)
+    early_exit_enabled: bool = _bool("EARLY_EXIT_ENABLED", "true")
     # 조기 탈출은 손실이 최소 이만큼(ROE %)은 돼야 고려한다 (너무 작은 노이즈에 반응해
     # 수수료만 나가는 것을 방지)
     early_exit_min_loss_roe: float = _float("EARLY_EXIT_MIN_LOSS_ROE", 1.0)
+    # [2026-08-16 실거래 복기] 최근 EARLY_EXIT 손실 중 일부는 하위 타임프레임 반전은
+    # 감지됐지만 상위시간대는 여전히 기존 방향을 절반 이상 지지하던 구간이었다. 완전 차단이
+    # 아니라, 상위시간대 지지비율이 이 값 이상이면 EARLY_EXIT를 잠시 보류하는 얕은 가드다.
+    # 0이면 비활성화.
+    early_exit_mtf_guard_min_ratio: float = _float("EARLY_EXIT_MTF_GUARD_MIN_RATIO", 0.5)
+    # [2026-08-23 복기] 최근 손실 숏은 "초반 1~2분 안에 유리구간 없이 바로 역행" 패턴이 반복됐다.
+    # 이런 케이스는 상위시간대 지지가 남아 있어도 들고 있을 이유가 약하므로, SHORT에 한해
+    # 초반 보유시간/최소 유리 ROE/즉시 손실 ROE 기준을 만족하면 MTF 가드보다 우선 조기청산한다.
+    short_early_fail_enabled: bool = _bool("SHORT_EARLY_FAIL_ENABLED", "true")
+    short_early_fail_min_hold_sec: float = _float("SHORT_EARLY_FAIL_MIN_HOLD_SEC", 15.0)
+    short_early_fail_max_hold_sec: float = _float("SHORT_EARLY_FAIL_MAX_HOLD_SEC", 120.0)
+    short_early_fail_min_favorable_roe: float = _float("SHORT_EARLY_FAIL_MIN_FAVORABLE_ROE", 0.5)
+    short_early_fail_trigger_roe: float = _float("SHORT_EARLY_FAIL_TRIGGER_ROE", 1.0)
+    first_60s_fail_enabled: bool = _bool("FIRST_60S_FAIL_ENABLED", "true")
+    first_60s_fail_min_hold_sec: float = _float("FIRST_60S_FAIL_MIN_HOLD_SEC", 30.0)
+    first_60s_fail_max_hold_sec: float = _float("FIRST_60S_FAIL_MAX_HOLD_SEC", 60.0)
+    first_60s_fail_trigger_roe: float = _float("FIRST_60S_FAIL_TRIGGER_ROE", 1.0)
+    first_60s_fail_min_favorable_roe: float = _float("FIRST_60S_FAIL_MIN_FAVORABLE_ROE", 0.3)
+    external_close_confirm_max_hold_sec: float = _float("EXTERNAL_CLOSE_CONFIRM_MAX_HOLD_SEC", 60.0)
+    first_3m_fail_enabled: bool = _bool("FIRST_3M_FAIL_ENABLED", "true")
+    first_3m_fail_min_hold_sec: float = _float("FIRST_3M_FAIL_MIN_HOLD_SEC", 180.0)
+    first_3m_fail_max_hold_sec: float = _float("FIRST_3M_FAIL_MAX_HOLD_SEC", 360.0)
+    first_3m_fail_trigger_roe: float = _float("FIRST_3M_FAIL_TRIGGER_ROE", 1.0)
+    first_3m_fail_min_favorable_roe: float = _float("FIRST_3M_FAIL_MIN_FAVORABLE_ROE", 0.5)
+    # [2026-08-24 원칙2 보강] 진입이 완전히 틀린 건 아닌데(초기 소폭 수익은 있음) 힘이 약해
+    # 무장까지 못 가는 거래는 작은 플러스에서 먼저 챙긴다. 강한 거래를 건드리지 않도록
+    # 비무장 + 초기 보유시간 + 소폭 유리구간 + 1분봉 역방향 조건이 동시에 맞을 때만 발동.
+    ambiguous_quick_profit_exit_enabled: bool = _bool("AMBIGUOUS_QUICK_PROFIT_EXIT_ENABLED", "false")
+    ambiguous_quick_profit_exit_min_hold_sec: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MIN_HOLD_SEC", 60.0)
+    ambiguous_quick_profit_exit_max_hold_sec: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MAX_HOLD_SEC", 180.0)
+    ambiguous_quick_profit_exit_min_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MIN_ROE", 0.25)
+    ambiguous_quick_profit_exit_max_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MAX_ROE", 0.8)
+    ambiguous_quick_profit_exit_min_favorable_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MIN_FAVORABLE_ROE", 0.4)
+    ambiguous_quick_profit_exit_max_favorable_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MAX_FAVORABLE_ROE", 1.2)
+    ambiguous_quick_profit_exit_min_pullback_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MIN_PULLBACK_ROE", 0.15)
+    ambiguous_quick_profit_exit_mid_hold_enabled: bool = _bool("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_HOLD_ENABLED", "false")
+    ambiguous_quick_profit_exit_mid_min_hold_sec: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MIN_HOLD_SEC", 180.0)
+    ambiguous_quick_profit_exit_mid_max_hold_sec: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MAX_HOLD_SEC", 600.0)
+    ambiguous_quick_profit_exit_mid_min_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MIN_ROE", 0.0)
+    ambiguous_quick_profit_exit_mid_max_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MAX_ROE", 2.0)
+    ambiguous_quick_profit_exit_mid_min_favorable_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MIN_FAVORABLE_ROE", 0.8)
+    ambiguous_quick_profit_exit_mid_max_favorable_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MAX_FAVORABLE_ROE", 2.0)
+    ambiguous_quick_profit_exit_mid_min_pullback_roe: float = _float("AMBIGUOUS_QUICK_PROFIT_EXIT_MID_MIN_PULLBACK_ROE", 0.4)
     # [2026-08-13 실거래 복기] 오늘 밤 EARLY_EXIT/EXTERNAL_CLOSE_LOSS 21건 전부(100%)가
     # 청산 후 15분 내 가격이 회복됐고, 그중 52%(11/21)는 진입 60초 이내 초단기 청산이었다.
     # 진입 직후 1~2캔들짜리 노이즈를 추세전환으로 오판하는 것으로 판단, 이 시간(초) 동안은
@@ -287,6 +364,107 @@ class Config:
     # 가드기간 동안 정식손절에 안 닿고 생존, 나머지 2건은 가드가 없었어도 어차피 정식손절에
     # 닿았을 케이스라 가드로 인한 추가 손실 확대 없음.
     early_exit_min_hold_sec: float = _float("EARLY_EXIT_MIN_HOLD_SEC", 120.0)
+    # [2026-08-15 야간 백테스트로 검증] 손절선 도달 "순간"에, 이미 회복 조짐이 보이면 아주 짧게만
+    # 기다렸다가 확정한다. 무조건 기다리는 건 여전히 나쁘다는 게 실측으로 재확인됐다(회복신호
+    # 없는 대조군 145건 60초 무조건대기: 평균 -1.03%p ROE, 개선 43.4%/악화 56.6%). 반면 회복신호
+    # (detect_reversal을 반대방향으로 3/3표) 있는 부분집합 241건은 30초 대기에서 개선 54.8%/
+    # 악화 45.2%, 평균 +0.29%p로 작지만 일관된 양의 기대값이 나왔다. 안전캡(추가손실이 이 %p를
+    # 넘으면 즉시 컷)은 업사이드(+25%p대)를 거의 훼손하지 않으면서 꼬리위험만 크게 줄인다
+    # (캡 없음 최악 -26.4%p → 캡 1.0%p 적용시 최악 -5.8%p).
+    # [중요] 봇 쪽에서만 유예하면 거래소에 걸어둔 STOP_MARKET(트리거가가 정확히 같은 레벨)이
+    # 먼저 체결돼 유예 자체가 무의미해진다 — 그래서 유예를 시작할 때 거래소 주문도 안전캡만큼만
+    # 넓혀 재등록한다(넓히는 방향이라 -2021 "즉시 체결" 오류가 안 나고, 거래소 보호가 사라지는
+    # 게 아니라 딱 캡만큼만 느슨해져 백테스트가 시뮬레이션한 설계와 일치).
+    # 기본값 False(꺼짐) — 실거래 검증 전까지는 .env에서 명시적으로 켜야 동작한다.
+    # [2026-08-17 사용자요청] "거래 체결이 안 되면 사유를 전달하기로 했는데 조용하다"
+    # 기존 tg.notify_scan_candidates()는 후보가 1개 이상일 때만 발송해서(`if not candidates:
+    # return`), 정작 거래가 없는 구간에는 아무 알림도 가지 않았다. 후보 0개가 이어질 때
+    # 이 간격(초)마다 entry_funnel 단계별 탈락 사유를 요약해 텔레그램으로 보낸다.
+    # 매 스캔(약 30초)마다 보내면 스팸이 되므로 스로틀 목적의 값이다. 0이면 비활성.
+    no_entry_reason_notify_sec: float = _float("NO_ENTRY_REASON_NOTIFY_SEC", 0.0)
+    # [2026-08-16 실거래 발견 + 사용자요청] 진입 유예 만료 시 손절폭을 한 번에 원래 값으로
+    # 되돌리면, 그 순간 -base~-base*widen_mult 구간(예: ROE -6%~-15%)에 있던 포지션이 일제히
+    # 즉시 청산된다. 실측: 원복 이후 STOP_LOSS 34건 중 15건(44.1%)이 보유 170~200초에 몰렸고
+    # (유예 180초 직후), 보유시간 중앙값이 193초였다. STOP_LOSS 손실합계 -21.71 USDT로 전체
+    # 적자(-24.54)의 대부분을 차지한다.
+    # 단순히 유예를 250초로 늘리는 안은 15건 재현 검증에서 개선7/악화6/변화없음2, 평균
+    # +0.57%p이나 중앙값 -0.13%p로 결론이 안 났다(연장 구간에 넓은 손절선까지 밀려 더 크게
+    # 잃은 사례 3건). 그래서 "연장"이 아니라 "중간 계단"을 둔다 — 유예 만료 후 stage2 시각까지는
+    # stage2_mult로만 좁히고, 그 뒤에 원래 폭으로 간다. 한꺼번에 죽는 대신 나눠서 처리된다.
+    #   0 ~ grace_sec        : base * grace_widen_mult   (예: 2.5배 → ROE -15%)
+    #   grace_sec ~ stage2_sec: base * stage2_mult        (예: 1.8배 → ROE -10.8%)
+    #   stage2_sec ~          : base                      (ROE -6%)
+    # stage2_sec가 grace_sec 이하이면 비활성화(기존 2단계 동작 그대로).
+    stop_loss_grace_stage2_sec: float = _float("STOP_LOSS_GRACE_STAGE2_SEC", 0.0)
+    stop_loss_grace_stage2_mult: float = _float("STOP_LOSS_GRACE_STAGE2_MULT", 1.8)
+    # [2026-08-16 사용자요청] "혹시라도 10usdt로 자산이 줄어들면 비상이기 때문에 배율 격리
+    # 2배로 전환 및 전체적인 로직 점검 및 버그 점검 필요해"
+    # 총자산이 emergency_balance_usdt "미만"으로 떨어지면 레버리지를 emergency_leverage로 강제
+    # 축소한다. 증거금 하한(compute_min_margin 계단식)은 그대로 유지되므로, 레버리지만 낮추면
+    # 같은 증거금에 노셔널이 줄어 가격변동 1%당 손실이 그만큼 작아진다(예: 6배→2배면 1/3).
+    # 격리(ISOLATED)는 cross_margin_min_balance_usdt 가드가 이미 강제하며, 격리 전환 실패 시
+    # 진입 자체가 취소된다 — 즉 "격리 2배"의 격리 쪽은 별도 설정 없이 이미 보장된다.
+    # 0이면 비활성화. 사용자 요청값은 10 USDT.
+    emergency_balance_usdt: float = _float("EMERGENCY_BALANCE_USDT", 0.0)
+    emergency_leverage: int = _int("EMERGENCY_LEVERAGE", 2)
+    # [2026-08-16 사용자제안] "V2에서 스파이크 조기진입 기능만 빼는 건 어때"
+    # 스파이크 기능은 두 층으로 나뉜다: ①태깅(early_entry_spike를 후보에 실음 — 진입을
+    # 막지도 늘리지도 않는 순수 관측용) ②공격적 체결(태그가 붙으면 호가를 넘겨 즉시 체결).
+    # 실측상 나쁜 쪽은 ②다: spike 태그 거래 5건 승률 40.0%/-0.18U vs 비spike 19건 78.9%/
+    # +1.08U였고, 슬리피지가 기록된 2건 중 BMTUSDT SHORT는 +0.558%(불리)로 레버리지 5배
+    # 기준 약 -2.8%p ROE 핸디캡을 안고 시작했다 — 유동성 얇은 알트에서 스프레드를 넘겨
+    # 체결하는 비용이 그대로 손실로 잡힌 것으로 보인다.
+    # 이 값을 false로 두면 ②만 끄고 ①은 유지한다 — 스파이크 여부를 계속 기록해 표본을
+    # 쌓되(향후 효과 판정/ML 피처용), 체결은 기존 지정가 방식 그대로라 손해가 없다.
+    # 기본 false(안전): 켜려면 명시적으로 .env에 지정해야 한다.
+    spike_entry_aggressive_fill: bool = _bool("SPIKE_ENTRY_AGGRESSIVE_FILL", "false")
+    # [2026-08-17 설계실험] micro-scalp는 기존 2번 메인 전략을 대체하지 않고, 별도 후보
+    # 레인으로만 관찰/검증한다. 첫 단계는 TAG_ONLY=true로 실제 진입 없이 후보만 기록한다.
+    micro_scalp_enabled: bool = _bool("MICRO_SCALP_ENABLED", "false")
+    micro_scalp_tag_only: bool = _bool("MICRO_SCALP_TAG_ONLY", "true")
+    micro_scalp_size_mult: float = _float("MICRO_SCALP_SIZE_MULT", 0.35)
+    micro_scalp_max_hold_sec: float = _float("MICRO_SCALP_MAX_HOLD_SEC", 120.0)
+    micro_scalp_min_probability: float = _float("MICRO_SCALP_MIN_PROBABILITY", 0.88)
+    micro_scalp_min_entry_priority: float = _float("MICRO_SCALP_MIN_ENTRY_PRIORITY", 0.80)
+    micro_scalp_long_only: bool = _bool("MICRO_SCALP_LONG_ONLY", "true")
+    micro_scalp_allow_short: bool = _bool("MICRO_SCALP_ALLOW_SHORT", "false")
+    micro_scalp_require_btc_opposes_false: bool = _bool("MICRO_SCALP_REQUIRE_BTC_OPPOSES_FALSE", "true")
+    micro_scalp_block_same_symbol_reentry_min: float = _float("MICRO_SCALP_BLOCK_SAME_SYMBOL_REENTRY_MIN", 20.0)
+    micro_scalp_early_exit_check_sec: float = _float("MICRO_SCALP_EARLY_EXIT_CHECK_SEC", 60.0)
+    micro_scalp_min_roe_by_60sec: float = _float("MICRO_SCALP_MIN_ROE_BY_60SEC", 0.3)
+    micro_scalp_min_roe_by_120sec: float = _float("MICRO_SCALP_MIN_ROE_BY_120SEC", 0.6)
+    frequency_lane_enabled: bool = _bool("FREQUENCY_LANE_ENABLED", "true")
+    frequency_lane_signal_enabled: bool = _bool("FREQUENCY_LANE_SIGNAL_ENABLED", "true")
+    frequency_lane_signal_score_discount: float = _float("FREQUENCY_LANE_SIGNAL_SCORE_DISCOUNT", 0.5)
+    frequency_lane_score_discount: float = _float("FREQUENCY_LANE_SCORE_DISCOUNT", 5.0)
+    frequency_lane_size_mult: float = _float("FREQUENCY_LANE_SIZE_MULT", 0.35)
+    frequency_lane_long_probability_discount: float = _float("FREQUENCY_LANE_LONG_PROBABILITY_DISCOUNT", 0.0)
+    frequency_lane_enabled: bool = _bool("FREQUENCY_LANE_ENABLED", "true")
+    frequency_lane_signal_enabled: bool = _bool("FREQUENCY_LANE_SIGNAL_ENABLED", "true")
+    frequency_lane_signal_score_discount: float = _float("FREQUENCY_LANE_SIGNAL_SCORE_DISCOUNT", 0.5)
+    frequency_lane_score_discount: float = _float("FREQUENCY_LANE_SCORE_DISCOUNT", 5.0)
+    frequency_lane_size_mult: float = _float("FREQUENCY_LANE_SIZE_MULT", 0.35)
+    # [2026-08-16 사용자요청] 스파이크 조기진입을 살리기 위한 3종 대책 중 2개.
+    # ① 구독 심볼을 유동성 상위 이만큼으로 제한한다(0이면 전체). 70개 → 20개면 메시지량이
+    #    약 1/3.5로 줄어 read-loop 버그의 방아쇠(메시지 폭주) 자체를 낮춘다. 유동성 상위가
+    #    스파이크 감지 가치도 가장 높아 손실이 적다.
+    spike_entry_max_symbols: int = _int("SPIKE_ENTRY_MAX_SYMBOLS", 0)
+    # ② 체결워커 건강판정을 "에러 수"가 아니라 "데이터가 실제로 들어오는가"로 바꾼다.
+    #    실측: V0는 에러 8만~47만인데 데이터는 정상(25,520/60초)이었고, V2는 에러 0인데
+    #    데이터가 0이었다 — 에러 수는 양방향 모두에서 건강 지표로 부적합함이 실증됐다.
+    ws_trade_health_by_data_flow: bool = _bool("WS_TRADE_HEALTH_BY_DATA_FLOW", "false")
+    # [2026-08-15 사용자요청] "300usdt 미만은 절대 크로스 진행하지 않게 해줘" — 소액 계좌에서
+    # 교차(CROSS) 마진은 한 포지션의 손실이 계좌 전체 증거금을 갉아먹어 복구 불가능해진다.
+    # 총자산이 이 값 미만인데 격리(ISOLATED) 전환에 실패하면 진입 자체를 취소한다.
+    # (실제 사고: set_margin_type이 -4067 "open orders exist"로 실패하는데도 진입이 그대로
+    #  진행돼 CROSSED로 잡힐 수 있었음 — 실패 64건 누적 확인)
+    cross_margin_min_balance_usdt: float = _float("CROSS_MARGIN_MIN_BALANCE_USDT", 300.0)
+    sl_defer_enabled: bool = _bool("SL_DEFER_ENABLED", "false")
+    sl_defer_sec: float = _float("SL_DEFER_SEC", 30.0)
+    # 회복신호 판정 표결수(EMA/MACD/RSI 3개 중). 백테스트상 3표(엄격)가 2표보다 안정적이었다.
+    sl_defer_min_votes: int = _int("SL_DEFER_MIN_VOTES", 3)
+    # 유예 시작 시점 대비 추가 손실이 이 %p(ROE)를 넘으면 유예를 즉시 포기하고 확정한다.
+    sl_defer_extra_loss_cap_pct: float = _float("SL_DEFER_EXTRA_LOSS_CAP_PCT", 1.0)
     # [2026-08-04] 스캘핑 재설계 후: 손실이 깊지 않은데(-2% ROE 이내) 이 시간(분)을 넘기면
     # 방향성 없는 코인으로 보고 슬롯을 비운다 (무기한 정체로 회전율이 떨어지는 문제 방지)
     scalp_max_hold_minutes: float = _float("SCALP_MAX_HOLD_MINUTES", 90.0)
@@ -307,7 +485,11 @@ class Config:
     small_profit_lock_balance_threshold: float = _float("SMALL_PROFIT_LOCK_BALANCE_THRESHOLD", 50.0)
     small_profit_lock_roe: float = _float("SMALL_PROFIT_LOCK_ROE", 1.0)
     small_profit_lock_drawdown_roe: float = _float("SMALL_PROFIT_LOCK_DRAWDOWN_ROE", 0.4)
-    fee_rate_roundtrip: float = _float("FEE_RATE_ROUNDTRIP", 0.001)  # 진입+청산 왕복 수수료 추정치(0.1%)
+    fee_rate_maker: float = _float("FEE_RATE_MAKER", 0.0002)  # Binance Futures maker 0.02%
+    fee_rate_taker: float = _float("FEE_RATE_TAKER", 0.0005)  # Binance Futures taker 0.05%
+    # 일반 손익 추정치는 "지정가 진입 + STOP/시장가 청산"이 섞인 실전 경로를 보수적으로 반영해
+    # maker+taker(0.07%)를 기본값으로 둔다.
+    fee_rate_roundtrip: float = _float("FEE_RATE_ROUNDTRIP", 0.0007)
     # [2026-08-09] 기대값 필터가 판단을 시작하기 전 최소 표본 수(그 이하면 항상 통과)
     ev_filter_min_sample: int = _int("EV_FILTER_MIN_SAMPLE", 15)
     # [2026-08-10] Small accounts need trade frequency for compounding tests. Keep
@@ -315,10 +497,19 @@ class Config:
     # all new scans. Set EV_FILTER_HARD_PAUSE=true to restore the old behavior.
     ev_filter_hard_pause: bool = _bool("EV_FILTER_HARD_PAUSE", "false")
     ev_defense_size_mult: float = _float("EV_DEFENSE_SIZE_MULT", 0.75)
-    # Keep the 12~18 trades/hour target feasible: symbol-level negative EV does
-    # not remove a symbol from scans by default. It stays tradable but is
-    # ranked/sized down.
-    negative_ev_symbol_size_mult: float = _float("NEGATIVE_EV_SYMBOL_SIZE_MULT", 0.60)
+    # [2026-08-17 운영 복기] 음수 EV 심볼을 "거래는 계속하되 비중만 줄이는" 기본값은
+    # 손익비가 무너진 상태에선 보호가 너무 약했다. 기본값 0은 스캔 단계에서 아예 제외를 뜻한다.
+    # 기존 동작(제외하지 않고 비중만 축소)으로 되돌리려면 0보다 큰 값으로 명시한다.
+    negative_ev_symbol_size_mult: float = _float("NEGATIVE_EV_SYMBOL_SIZE_MULT", 0.0)
+    # [2026-08-18 실측으로 발견/보완] 위 "전면 제외"를 그대로 켜면 거래가 거의 멎는다.
+    # EV_FILTER_MIN_SAMPLE(25건) 이상 거래한 심볼만 판정 대상이 되는데, 실측 시점에
+    # 원장 111개 심볼 중 표본 충족은 31개뿐이었고 **그 31개가 전부 음수 EV로 제외**됐다.
+    # 나머지 80개는 아무리 나빠도 표본 미달로 판정조차 되지 않는다. 즉 "나쁜 심볼을 거른다"가
+    # 아니라 "많이 거래해서 데이터가 쌓인 심볼을 전부 거른다"가 되는 순환 구조다.
+    # 실측: V2 이후 313건 중 제외 대상이 270건(86%)이었고, 그 270건의 순익 -1.046보다
+    # 남는 43건의 순익 -1.195가 오히려 더 나빴다 — 손실이 제거되지도 않는다.
+    # 그래서 제외를 "기대값이 가장 나쁜 상위 N개"로 제한한다. 0이면 상한 없음(전면 제외).
+    negative_ev_symbol_max_exclude: int = _int("NEGATIVE_EV_SYMBOL_MAX_EXCLUDE", 5)
 
     rsi_period: int = _int("RSI_PERIOD", 14)
     rsi_oversold: float = _float("RSI_OVERSOLD", 30)
@@ -334,6 +525,66 @@ class Config:
     stoch_rsi_overbought: float = _float("STOCH_RSI_OVERBOUGHT", 80)
     bb_period: int = _int("BB_PERIOD", 20)
     bb_std: int = _int("BB_STD", 2)
+    ema_slope_lookback: int = _int("EMA_SLOPE_LOOKBACK", 2)
+    ema_gap_min_pct: float = _float("EMA_GAP_MIN_PCT", 0.10)
+    # Allow a small normalized slope mismatch without removing EMA direction gates.
+    ema_slope_relation_tolerance_pct: float = _float("EMA_SLOPE_RELATION_TOLERANCE_PCT", 0.0)
+    # Rule 1 frequency targets; bounded adaptation only, never a signal bypass.
+    slot_fill_target: float = _float("SLOT_FILL_TARGET", 0.70)
+    hourly_trade_target: int = _int("HOURLY_TRADE_TARGET", 13)
+    # [2026-08-25 버그수정] 먼지 진입 판정 임계를 진입 하한과 분리한다. 예전엔 진입 하한의
+    # 50%였는데, 하한을 10 USDT로 올리자 임계가 5.0이 되어 4 USDT짜리 부분체결이 즉시
+    # 시장가로 되팔렸다. 0으로 두면 예전 비례 방식으로 되돌아간다(원복 경로).
+    dust_entry_max_margin_usdt: float = _float("DUST_ENTRY_MAX_MARGIN_USDT", 1.25)
+    # [2026-08-25 사용자요청] 1회 진입 증거금을 고정한다(0이면 기존 비율 사이징).
+    # 베팅액 고정은 전략 검증의 전제다 — 크기가 계속 변하면 성과 비교가 불가능하다.
+    fixed_entry_margin_usdt: float = _float("FIXED_ENTRY_MARGIN_USDT", 0.0)
+    # [2026-08-25] 순방향 분할 — 총 크기를 고정한 채 나눠 담는다.
+    # 핵심은 "이익 확대"가 아니라 "손실 축소"다. 원장 535건 시뮬레이션:
+    #   전량 1회 진입            건당 -0.5727%p
+    #   1차 40% -> 60초 ROE>0    건당 -0.2967%p   <- 채택
+    # 총 명목이 같으므로 수수료가 늘지 않고, 진입 횟수도 그대로라 거래수도 안 줄어든다.
+    # (1차를 크게 잡을수록 나빠진다: 50% -0.3427 / 60% -0.3887)
+    forward_scale_in_enabled: bool = _bool("FORWARD_SCALE_IN_ENABLED", "false")
+    forward_scale_in_first_ratio: float = _float("FORWARD_SCALE_IN_FIRST_RATIO", 0.4)
+    forward_scale_in_check_sec: float = _float("FORWARD_SCALE_IN_CHECK_SEC", 60.0)
+    forward_scale_in_max_sec: float = _float("FORWARD_SCALE_IN_MAX_SEC", 150.0)
+    forward_scale_in_min_roe: float = _float("FORWARD_SCALE_IN_MIN_ROE", 0.0)
+    # [2026-08-25 창 분리] 2차 체결 직후 "애매한 작은 수익 익절"을 잠시 쉬게 하는 시간(초).
+    # 두 규칙의 시간창이 겹쳐서, 2차를 넣자마자 청산되면 2차 수수료만 내고 끝난다.
+    # 청산 판정만 미루는 것이라 진입/거래수에는 영향이 없다. 0이면 비활성.
+    scale_in_quick_exit_cooldown_sec: float = _float("SCALE_IN_QUICK_EXIT_COOLDOWN_SEC", 0.0)
+    # [2026-08-25] 2차 진입에 RSI 극단배제를 요구한다. 실측상 2차 수익의 부호를 바꾸는
+    # 유일한 조건이다(수수료 차감 후 -0.465% -> +0.113%). 볼밴/EMA는 2차에서 해롭거나 무의미.
+    forward_scale_in_require_rsi: bool = _bool("FORWARD_SCALE_IN_REQUIRE_RSI", "false")
+    # [2026-08-25 AAVEUSDT 복기] whipsaw 하한을 ATR(후행)만으로 보지 않고 최근 실제 변동폭도
+    # 함께 본다. 하한값 자체는 그대로 두고, ATR이 아직 못 따라온 경우만 실변동폭으로 대신
+    # 판정한다. 코드 기본값은 false(기존 동작 유지).
+    whipsaw_immediate_vol_enabled: bool = _bool("WHIPSAW_IMMEDIATE_VOL_ENABLED", "false")
+    whipsaw_immediate_lookback: int = _int("WHIPSAW_IMMEDIATE_LOOKBACK", 2)
+    target_relax_max_steps: int = _int("TARGET_RELAX_MAX_STEPS", 2)
+    # [2026-08-25 원칙1 강화] 거래 0건 구간에서는 1시간 주기로 한 단계씩 푸는 게 너무 느려
+    # 더 짧은 주기로 완화 점검을 한 번 더 돌린다. 가뭄(거래 0 + 보유 0)이 아니면 아무 일도
+    # 하지 않으므로 원칙 2에는 영향이 없다.
+    rule1_starvation_relax_enabled: bool = _bool("RULE1_STARVATION_RELAX_ENABLED", "false")
+    rule1_starvation_interval_sec: float = _float("RULE1_STARVATION_INTERVAL_SEC", 900.0)
+    target_whipsaw_min_atr_step: float = _float("TARGET_WHIPSAW_MIN_ATR_STEP", 0.10)
+    # [2026-08-25] whipsaw 하한 완화의 바닥. 기존엔 코드에 0.50이 박혀 있었는데,
+    # 기준선을 그보다 낮게 두면 완화가 오히려 값을 0.50으로 끌어올리는 역전이 생겼다.
+    # 이제 _relax_downward()가 기준선을 넘지 못하게 막지만, 바닥 자체도 설정으로 뺀다.
+    target_whipsaw_min_atr_floor: float = _float("TARGET_WHIPSAW_MIN_ATR_FLOOR", 0.50)
+    # [2026-08-25 원칙1 강화] 1분봉 노이즈 필터(꼬리/몸통 비율 상한)도 완화 사다리에 넣는다.
+    # whipsaw 다음으로 큰 차단원이라(실측 신호 357건 중 77건) 순서대로 공략하기 위함.
+    target_one_min_noise_step: float = _float("TARGET_ONE_MIN_NOISE_STEP", 0.5)
+    target_one_min_noise_max_ratio: float = _float("TARGET_ONE_MIN_NOISE_MAX_RATIO", 5.0)
+    bb_width_expansion_ratio: float = _float("BB_WIDTH_EXPANSION_RATIO", 1.01)
+    bb_breakout_lookback: int = _int("BB_BREAKOUT_LOOKBACK", 1)
+    bb_breakout_entry_enabled: bool = _bool("BB_BREAKOUT_ENTRY_ENABLED", "false")
+    bb_breakout_entry_score: float = _float("BB_BREAKOUT_ENTRY_SCORE", 0.5)
+    bb_mid_reclaim_entry_enabled: bool = _bool("BB_MID_RECLAIM_ENTRY_ENABLED", "true")
+    one_min_timing_only: bool = _bool("ONE_MIN_TIMING_ONLY", "true")
+    volume_increase_filter_enabled: bool = _bool("VOLUME_INCREASE_FILTER_ENABLED", "true")
+    volume_increase_min_ratio: float = _float("VOLUME_INCREASE_MIN_RATIO", 1.05)
     atr_period: int = _int("ATR_PERIOD", 14)
     adx_period: int = _int("ADX_PERIOD", 14)
     adx_threshold: float = _float("ADX_THRESHOLD", 20)
@@ -350,9 +601,56 @@ class Config:
     aggregate_risk_size_mult: float = _float("AGGREGATE_RISK_SIZE_MULT", 0.65)
     min_margin_usdt: float = _float("MIN_MARGIN_USDT", 5.0)
     aggressive_min_margin_usdt: float = _float("AGGRESSIVE_MIN_MARGIN_USDT", 3.0)
+    large_balance_tier1_threshold: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER1_THRESHOLD", 200.0)
+    large_balance_tier1_min_margin_usdt: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER1_USDT", 35.0)
+    large_balance_tier2_threshold: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER2_THRESHOLD", 300.0)
+    large_balance_tier2_min_margin_usdt: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER2_USDT", 40.0)
+    large_balance_tier3_threshold: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER3_THRESHOLD", 500.0)
+    large_balance_tier3_min_margin_usdt: float = _float("LARGE_BALANCE_MIN_MARGIN_TIER3_USDT", 50.0)
     small_balance_min_margin_usdt: float = _float("SMALL_BALANCE_MIN_MARGIN_USDT", 4.0)
+    # [2026-08-16 사용자요청] 이미 포지션이 열린 상태에서 남은 가용증거금이 애매하게
+    # 줄어들면(예: VELVETUSDT) 일반 최소증거금 바닥 때문에 주문수량이 0으로 떨어질 수 있다.
+    # 이때만, 그리고 아래 reserve를 남길 수 있을 때만 더 낮은 전용 바닥을 허용한다.
+    small_balance_existing_positions_min_margin_usdt: float = _float(
+        "SMALL_BALANCE_EXISTING_POSITIONS_MIN_MARGIN_USDT", 1.9
+    )
+    small_balance_available_reserve_usdt: float = _float("SMALL_BALANCE_AVAILABLE_RESERVE_USDT", 0.75)
+    # [2026-08-15 사용자요청] 극소잔고 구간을 3단계로 세분화("5달러 미만 1.9 / 8달러 초과 4 /
+    # 10달러 초과 7"). compute_min_margin()이 이 3단계를 위 aggressive_min_margin_usdt보다
+    # 먼저 확인한다(잔고가 tier3_threshold 이상이면 tier3, ...tier2_threshold 이상이면
+    # tier2, tier1_threshold 미만이면 tier1 — 그 사이(예: 5~8)는 명시적으로 안 정해줘서
+    # tier1을 그대로 유지하는 계단식으로 해석했다. 잔고가 바뀌면 다시 조정 요청 예상).
+    tiny_balance_tier1_threshold: float = _float("TINY_BALANCE_TIER1_THRESHOLD", 5.0)
+    tiny_balance_tier1_min_margin_usdt: float = _float("TINY_BALANCE_TIER1_MIN_MARGIN_USDT", 1.9)
+    tiny_balance_tier2_threshold: float = _float("TINY_BALANCE_TIER2_THRESHOLD", 8.0)
+    tiny_balance_tier2_min_margin_usdt: float = _float("TINY_BALANCE_TIER2_MIN_MARGIN_USDT", 4.0)
+    tiny_balance_tier3_threshold: float = _float("TINY_BALANCE_TIER3_THRESHOLD", 10.0)
+    tiny_balance_tier3_min_margin_usdt: float = _float("TINY_BALANCE_TIER3_MIN_MARGIN_USDT", 7.0)
+    # [2026-08-15 사용자요청] "50usdt 넘으면 이전처럼 15% 비율로 진입" — 극소잔고 계단식
+    # 최소증거금 오버라이드는 이 문턱부터 완전히 안 걸리게 하고, 원래 있던 POSITION_SIZE_MIN/
+    # MAX(15%) 비율 기반 사이징이 자연스럽게 지배하도록 되돌린다.
+    tiny_balance_graduation_threshold: float = _float("TINY_BALANCE_GRADUATION_THRESHOLD", 50.0)
 
     min_confirmations: int = _int("MIN_SIGNAL_CONFIRMATIONS", 2)
+    # [2026-08-25 원칙0 정합] 점수제에서 EMA 추세만으로 1.0점이라, MIN_SIGNAL_CONFIRMATIONS=1
+    # 운영값에서는 볼린저밴드가 하나도 관여하지 않은 순수 EMA 진입이 통과했다. 이 플래그를
+    # 켜면 볼밴 관여(중단선 리클레임/거부, 밴드 돌파, 밴드폭 확장 중 하나)를 필수로 만든다.
+    # 코드 기본값은 false로 두어 기존 동작을 유지하고, 운영 .env에서만 켠다(원복은 false).
+    bb_participation_required: bool = _bool("BB_PARTICIPATION_REQUIRED", "false")
+    # [2026-08-25] 볼밴 관여를 하드 게이트 대신 우선순위 점수로 반영할 때 쓰는 가감치.
+    # 관여하면 +bonus, 아니면 -bonus. 0이면 아무 일도 하지 않는다.
+    bb_participation_priority_bonus: float = _float("BB_PARTICIPATION_PRIORITY_BONUS", 0.0)
+    # [2026-08-25] RSI도 차단이 아니라 우선순위 점수로 반영한다.
+    # 3분봉 캐시 재생(2,471 신호)에서 "볼밴+EMA+RSI 방향일치"가 15분 후 선행수익률
+    # +0.057% -> +0.446%(7.8배), 승률 47.0% -> 52.2%로 가장 좋았다. 다만 차단으로 걸면
+    # whipsaw 통과분의 37.7%만 남아 거래수가 62% 줄어 원칙 1을 정면으로 깬다.
+    # 그래서 순위 가감으로만 반영한다(거래수 영향 0).
+    # 방향일치 = LONG이면 RSI가 과매수(overbought) 미만이면서 상승 중,
+    #            SHORT이면 과매도(oversold) 초과이면서 하락 중.
+    rsi_alignment_priority_bonus: float = _float("RSI_ALIGNMENT_PRIORITY_BONUS", 0.0)
+    rsi_score_weight: float = _float("RSI_SCORE_WEIGHT", 0.15)
+    rsi_alignment_overbought: float = _float("RSI_ALIGNMENT_OVERBOUGHT", 70.0)
+    rsi_alignment_oversold: float = _float("RSI_ALIGNMENT_OVERSOLD", 30.0)
     # [2026-08-06] 펌프(급등/급락) 감지 재설계 — 72시간/200심볼 교차검증으로 승률37%대·
     # 손익분기30.9%(TP8/SL3 기준)로 EV 양전 확인된 유일한 신호. 캔들 자체 변동폭+거래량배수로 판단.
     pump_min_candle_chg_pct: float = _float("PUMP_MIN_CANDLE_CHG_PCT", 2.5)
@@ -360,6 +658,7 @@ class Config:
     min_entry_probability: float = _float("MIN_ENTRY_PROBABILITY", 0.70)
     # 숏은 손실이 잦아서(급반등에 취약) 롱보다 더 까다로운 확률 기준과 더 작은 비중을 적용
     short_min_entry_probability: float = _float("SHORT_MIN_ENTRY_PROBABILITY", 0.78)
+    short_probability_relaxation: float = _float("SHORT_PROBABILITY_RELAXATION", 0.02)
     short_size_multiplier: float = _float("SHORT_SIZE_MULTIPLIER", 0.5)
     # 숏은 스윙이 아니라 스캘핑으로만 진입한다: 텔레그램 분석과 같은 100점 만점 종합점수가
     # 이 값 이상이고, 5분 내 목표 익절(SHORT_TAKE_PROFIT_MIN)에 도달할 가능성이 있을 때만 진입한다.
@@ -378,22 +677,60 @@ class Config:
     max_entry_spread_pct: float = _float("MAX_ENTRY_SPREAD_PCT", 0.18)
     one_min_noise_filter_enabled: bool = _bool("ONE_MIN_NOISE_FILTER_ENABLED", "true")
     one_min_noise_max_wick_body_ratio: float = _float("ONE_MIN_NOISE_MAX_WICK_BODY_RATIO", 2.5)
+    # [2026-08-25 B안] 꼬리를 방향별로 본다. LONG은 윗꼬리(눌림), SHORT은 아랫꼬리(되받힘)만
+    # 위험으로 계산한다. 방향에 유리한 꼬리까지 벌점을 주던 걸 없앤다.
+    # 차단이 줄기만 하고 늘지 않는다(방향별 꼬리 <= 합산 꼬리).
+    one_min_noise_directional_wick: bool = _bool("ONE_MIN_NOISE_DIRECTIONAL_WICK", "false")
     # [2026-08-12 백테스트] SHORT 스캘핑 신호 1분봉이 저가에서 0.5% 이상 되감겨 마감하면
     # 아래꼬리/흡수 후 반등으로 보고 SHORT 진입을 제외한다. 5일 1m 백테스트에서
     # SHORT 손익 -10.3960 -> +2.7449, validation 순손익 -3.4363 -> +1.7357로 개선.
     short_scalp_max_close_from_low_pct: float = _float("SHORT_SCALP_MAX_CLOSE_FROM_LOW_PCT", 0.5)
-    # Do not block trades for a possible SHORT snapback; keep the scalp loop active,
-    # but rank these candidates behind cleaner setups and reduce their size.
+    # SHORT 되감기 위험은 원칙 2 손실 방어를 위해 선택적으로 진입을 보류한다.
     short_reversal_risk_enabled: bool = _bool("SHORT_REVERSAL_RISK_ENABLED", "true")
+    short_reversal_risk_block_enabled: bool = _bool("SHORT_REVERSAL_RISK_BLOCK_ENABLED", "false")
+    short_reversal_risk_chase_block_enabled: bool = _bool("SHORT_REVERSAL_RISK_CHASE_BLOCK_ENABLED", "false")
     short_reversal_risk_priority_penalty: float = _float("SHORT_REVERSAL_RISK_PRIORITY_PENALTY", 0.08)
     short_reversal_risk_size_mult: float = _float("SHORT_REVERSAL_RISK_SIZE_MULT", 0.65)
+    short_low_strength_priority_penalty: float = _float("SHORT_LOW_STRENGTH_PRIORITY_PENALTY", 0.04)
+    short_reversal_risk_floor_mult: float = _float("SHORT_REVERSAL_RISK_FLOOR_MULT", 0.85)
+    short_low_strength_floor_threshold: float = _float("SHORT_LOW_STRENGTH_FLOOR_THRESHOLD", 0.60)
+    short_low_strength_floor_mult: float = _float("SHORT_LOW_STRENGTH_FLOOR_MULT", 0.80)
+    long_low_strength_threshold: float = _float("LONG_LOW_STRENGTH_THRESHOLD", 0.60)
+    long_low_strength_priority_penalty: float = _float("LONG_LOW_STRENGTH_PRIORITY_PENALTY", 0.03)
+    long_low_strength_size_mult: float = _float("LONG_LOW_STRENGTH_SIZE_MULT", 0.90)
+    chase_entry_priority_penalty: float = _float("CHASE_ENTRY_PRIORITY_PENALTY", 0.02)
+    btc_momentum_priority_penalty: float = _float("BTC_MOMENTUM_PRIORITY_PENALTY", 0.03)
+    bb_width_soft_score: float = _float("BB_WIDTH_SOFT_SCORE", 0.5)
     low_balance_recovery_skip_two_candle_confirmation: bool = _bool("LOW_BALANCE_RECOVERY_SKIP_TWO_CANDLE_CONFIRMATION", "true")
 
-    # 1분봉 신호가 나온 후, 이 상위 시간대들의 추세와 같은 방향인지 최종 확인 (스캘핑 신호를 더 확실하게)
+    # 기본 스캔은 3분봉 미니스윙으로 보고, 상위 확인은 15분/30분까지만 둔다.
+    # 1시간 이상 추세까지 강제하면 거래 수가 급감하고, 사용자가 의도한 "짧은 스윙"
+    # 관점과도 멀어진다.
     mtf_timeframes: list = field(default_factory=lambda: [
-        s.strip() for s in os.getenv("MTF_TIMEFRAMES", "5m,15m,1h,4h").split(",") if s.strip()
+        s.strip() for s in os.getenv("MTF_TIMEFRAMES", "15m,30m").split(",") if s.strip()
     ])
-    mtf_min_agree_ratio: float = _float("MTF_MIN_AGREE_RATIO", 0.75)
+    mtf_hard_gate_enabled: bool = _bool("MTF_HARD_GATE_ENABLED", "false")
+    mtf_min_agree_ratio: float = _float("MTF_MIN_AGREE_RATIO", 0.5)
+    short_require_15m_alignment: bool = _bool("SHORT_REQUIRE_15M_ALIGNMENT", "true")
+    short_alignment_timeframe: str = os.getenv("SHORT_ALIGNMENT_TIMEFRAME", "15m")
+    short_alignment_exception_enabled: bool = _bool("SHORT_ALIGNMENT_EXCEPTION_ENABLED", "true")
+    short_alignment_exception_probability_min: float = _float("SHORT_ALIGNMENT_EXCEPTION_PROBABILITY_MIN", 0.78)
+    short_alignment_exception_priority_min: float = _float("SHORT_ALIGNMENT_EXCEPTION_PRIORITY_MIN", 0.78)
+    short_alignment_exception_cooldown_sec: float = _float("SHORT_ALIGNMENT_EXCEPTION_COOLDOWN_SEC", 180.0)
+    short_alignment_exception_block_chase: bool = _bool("SHORT_ALIGNMENT_EXCEPTION_BLOCK_CHASE", "true")
+    short_alignment_exception_block_btc_opposes: bool = _bool("SHORT_ALIGNMENT_EXCEPTION_BLOCK_BTC_OPPOSES", "true")
+    # [2026-08-22 사용자판단] "지금은 조정 단계라 숏이 유리"한 국면을 임시 반영하는 스위치.
+    # 켜면 SHORT는 더 적은 MTF 합의로도 통과시키고, LONG은 더 높은 합의를 요구한다.
+    short_bias_mode_enabled: bool = _bool("SHORT_BIAS_MODE_ENABLED", "false")
+    short_bias_short_mtf_min_agree_ratio: float = _float("SHORT_BIAS_SHORT_MTF_MIN_AGREE_RATIO", 0.34)
+    short_bias_long_mtf_min_agree_ratio: float = _float("SHORT_BIAS_LONG_MTF_MIN_AGREE_RATIO", 1.0)
+    mtf_zero_agree_exception_enabled: bool = _bool("MTF_ZERO_AGREE_EXCEPTION_ENABLED", "false")
+    mtf_zero_agree_exception_probability_min: float = _float("MTF_ZERO_AGREE_EXCEPTION_PROBABILITY_MIN", 1.0)
+    mtf_zero_agree_exception_priority_min: float = _float("MTF_ZERO_AGREE_EXCEPTION_PRIORITY_MIN", 0.88)
+    mtf_zero_agree_exception_max_total: int = _int("MTF_ZERO_AGREE_EXCEPTION_MAX_TOTAL", 2)
+    mtf_zero_agree_exception_cooldown_sec: float = _float("MTF_ZERO_AGREE_EXCEPTION_COOLDOWN_SEC", 180.0)
+    mtf_zero_agree_exception_block_chase: bool = _bool("MTF_ZERO_AGREE_EXCEPTION_BLOCK_CHASE", "true")
+    mtf_zero_agree_exception_block_btc_opposes: bool = _bool("MTF_ZERO_AGREE_EXCEPTION_BLOCK_BTC_OPPOSES", "true")
     probability_adx_cap: float = _float("PROBABILITY_ADX_CAP", 25.0)
 
     # 진입 직전 비트코인이 급락/급등하고 있으면(알트코인은 BTC를 따라가는 경향이 강함)
@@ -491,6 +828,30 @@ class Config:
     # 차단 필터 대신, 지정가를 호가보다 아주 조금 유리하게 놓아 캔들 끝단 추격 진입을 줄인다.
     # LONG은 bid 아래, SHORT는 ask 위. 0이면 기존 호가 그대로.
     limit_entry_pullback_pct: float = _float("LIMIT_ENTRY_PULLBACK_PCT", 0.0)
+    # [2026-08-16 체결률 개선 실험] 기본 메이커 지정가가 wait_sec 동안 전혀 안 채워졌을 때만,
+    # 마지막에 반대편 호가를 한 번 교차해 즉시 체결을 노린다. 다만 백테스트상 "처음부터 전부
+    # 공격적으로" 바꾸는 건 손익이 더 나빠졌으므로, 완전 미체결 + 좁은 스프레드 + 작은 추격폭
+    # 조건이 모두 맞는 경우에만 짧게 한 번 재시도하는 하이브리드로 제한한다.
+    limit_entry_aggressive_fallback_enabled: bool = _bool("LIMIT_ENTRY_AGGRESSIVE_FALLBACK_ENABLED", "false")
+    # [2026-08-25] "고확률 대형 베팅" 기준(0.85)과 "미체결 후보 1회 구제" 기준은 목적이 다르다.
+    # 후자는 거래수/체결률 회복이 목적이라 전용 하한을 더 낮게 두고, 기존 reversal/음수EV
+    # 안전게이트는 그대로 유지한다.
+    limit_entry_fallback_min_probability: float = _float("LIMIT_ENTRY_FALLBACK_MIN_PROBABILITY", 0.78)
+    limit_entry_fallback_min_score: float = _float("LIMIT_ENTRY_FALLBACK_MIN_SCORE", 0.72)
+    limit_entry_aggressive_wait_sec: float = _float("LIMIT_ENTRY_AGGRESSIVE_WAIT_SEC", 1.5)
+    limit_entry_aggressive_max_spread_pct: float = _float("LIMIT_ENTRY_AGGRESSIVE_MAX_SPREAD_PCT", 0.12)
+    limit_entry_aggressive_max_chase_pct: float = _float("LIMIT_ENTRY_AGGRESSIVE_MAX_CHASE_PCT", 0.20)
+    # [2026-08-22 사용자요청] 내부 청산(TAKE_PROFIT/TIME_STOP/SOFT_STOP/EARLY_EXIT)은 먼저
+    # reduceOnly 지정가로 시도해 슬리피지를 줄인다. 다만 오래 걸리면 되레 손익이 악화되므로,
+    # 이 초 안에 전량 체결되지 않으면 남은 수량만 시장가로 즉시 정리한다.
+    limit_exit_enabled: bool = _bool("LIMIT_EXIT_ENABLED", "true")
+    limit_exit_wait_sec: float = _float("LIMIT_EXIT_WAIT_SEC", 1.0)
+    # LONG 청산은 현재 ask, SHORT 청산은 현재 bid에 둔다. 여기에 이 값(%)만큼 더 유리한
+    # 쪽으로 살짝 개선해 메이커 체결 기회를 보되, 너무 멀어지면 미체결이 늘어나므로 기본 0.
+    limit_exit_improve_pct: float = _float("LIMIT_EXIT_IMPROVE_PCT", 0.0)
+    # 최소 익절선 자체가 왕복 수수료를 못 넘으면 "이론상 익절"이어도 실현순익이 0 이하가 될 수
+    # 있다. 거래소 TP/트레일링 활성가와 내부 익절 게이트에 이 추가 순익 버퍼(ROE, %)를 더한다.
+    min_net_take_profit_roe: float = _float("MIN_NET_TAKE_PROFIT_ROE", 0.20)
 
     # 1) 유동성 얇은 시간대(UTC 기준 시각)에는 신규 진입을 쉰다
     blocked_hours_utc: list = field(default_factory=lambda: [
@@ -507,6 +868,24 @@ class Config:
     # [2026-08-05] TIME_STOP(방향성 없음 판단) 대상이어도, 상위시간대 추세가 이 비율 이상
     # 여전히 포지션 방향을 지지하면(=진짜 스윙으로 가는 중) 강제청산을 면제하고 트레일링/손절에 맡긴다
     time_stop_trend_exempt_min_ratio: float = _float("TIME_STOP_TREND_EXEMPT_MIN_RATIO", 1.0)
+    # [2026-08-24 QA] 6~8분 동안 무장 못 하고 힘을 못 쓰는 포지션은 더 빨리 정리하고,
+    # 10~15분 구간 정체 포지션도 기존보다 일찍 비워서 장기 EXTERNAL_CLOSE_LOSS 누적을 줄인다.
+    unarmed_mid_hold_cut_enabled: bool = _bool("UNARMED_MID_HOLD_CUT_ENABLED", "true")
+    unarmed_mid_hold_cut_min_minutes: float = _float("UNARMED_MID_HOLD_CUT_MIN_MINUTES", 6.0)
+    unarmed_mid_hold_cut_max_minutes: float = _float("UNARMED_MID_HOLD_CUT_MAX_MINUTES", 8.0)
+    unarmed_mid_hold_cut_max_favorable_roe: float = _float("UNARMED_MID_HOLD_CUT_MAX_FAVORABLE_ROE", 0.8)
+    unarmed_mid_hold_cut_max_current_roe: float = _float("UNARMED_MID_HOLD_CUT_MAX_CURRENT_ROE", 0.2)
+    # [2026-08-24 QA] 6~10분 동안 1%대 초반까지는 갔지만 끝내 무장하지 못한 채 음전으로
+    # 되밀리는 케이스를 별도 정리한다. 기존 "아예 힘이 없던 6~8분 정체" 규칙은 그대로 유지.
+    unarmed_mid_hold_reversal_enabled: bool = _bool("UNARMED_MID_HOLD_REVERSAL_ENABLED", "true")
+    unarmed_mid_hold_reversal_min_minutes: float = _float("UNARMED_MID_HOLD_REVERSAL_MIN_MINUTES", 6.0)
+    unarmed_mid_hold_reversal_max_minutes: float = _float("UNARMED_MID_HOLD_REVERSAL_MAX_MINUTES", 10.0)
+    unarmed_mid_hold_reversal_max_favorable_roe: float = _float("UNARMED_MID_HOLD_REVERSAL_MAX_FAVORABLE_ROE", 1.6)
+    unarmed_mid_hold_reversal_max_current_roe: float = _float("UNARMED_MID_HOLD_REVERSAL_MAX_CURRENT_ROE", -0.3)
+    stagnation_time_stop_enabled: bool = _bool("STAGNATION_TIME_STOP_ENABLED", "true")
+    stagnation_time_stop_min_hold_min: float = _float("STAGNATION_TIME_STOP_MIN_HOLD_MIN", 10.0)
+    stagnation_time_stop_max_roe: float = _float("STAGNATION_TIME_STOP_MAX_ROE", 0.6)
+    stagnation_time_stop_min_roe: float = _float("STAGNATION_TIME_STOP_MIN_ROE", -1.0)
 
     # 4) 한 심볼에서 연속 손실이 이 횟수 이상이면, 이 시간(분) 동안 그 심볼 신규 진입을 쉰다
     symbol_blacklist_loss_threshold: int = _int("SYMBOL_BLACKLIST_LOSS_THRESHOLD", 2)
@@ -535,6 +914,18 @@ class Config:
     recent_performance_min_trades: int = _int("RECENT_PERFORMANCE_MIN_TRADES", 5)
     recent_defense_winrate_threshold: float = _float("RECENT_DEFENSE_WINRATE_THRESHOLD", 0.45)
     recent_defense_size_mult: float = _float("RECENT_DEFENSE_SIZE_MULT", 0.75)
+    # [2026-08-19] 방어 배율이 실제로는 적용되지 않던 사각지대를 연다.
+    # 실측: 최근 24시간 거래의 99%가 증거금 1.9 부근이었다. 잔고 4.7에서 비중 15%는 증거금
+    # 0.70인데 compute_position_size가 max(비율기반, 최소증거금 하한 1.9)를 쓰므로, ratio에
+    # 0.75를 곱해도 0.53 -> max(0.53, 1.9) = 1.9로 하한이 덮어써 **주문 크기가 전혀 안 줄었다**.
+    # 로그에는 "방어 배율 75% 적용"이 295회 찍혔지만 실효는 0이었다.
+    # 이 값(>0)이면 최근성과 방어가 발동한 진입에 한해 하한을 여기까지 낮춘다.
+    # 1.4로 잡은 근거: 레버리지 4배에서 명목 5.6 USDT라 거래소 최소명목 5.0 대비 12% 여유가
+    # 있다(1.25면 명목 정확히 5.0이라 수량 반올림에서 거부될 위험). 실효 축소 배수는
+    # 1.90 -> 1.40 = x0.74이며, 원장 1863건 역시뮬에서 거래수를 100% 유지한 채
+    # 순익 +5.428 개선(walk-forward 전반 +2.990 / 후반 +2.438, 9일 중 8일 플러스)이 나왔다.
+    # **기본 0.0 = 비활성**이라 .env에서 지우거나 0으로 두면 기존 동작 그대로 원복된다.
+    recent_defense_min_margin_usdt: float = _float("RECENT_DEFENSE_MIN_MARGIN_USDT", 0.0)
     direction_performance_window: int = _int("DIRECTION_PERFORMANCE_WINDOW", 5)
     direction_performance_min_trades: int = _int("DIRECTION_PERFORMANCE_MIN_TRADES", 3)
     direction_loss_size_mult: float = _float("DIRECTION_LOSS_SIZE_MULT", 0.85)
@@ -544,6 +935,11 @@ class Config:
     # 이하로 축소한다 (재진입 자체는 막지 않음 — TAKEUSDT 4연속 최대비중 재진입 후 급반전 실측)
     same_symbol_reentry_window_min: float = _float("SAME_SYMBOL_REENTRY_WINDOW_MIN", 60.0)
     same_symbol_reentry_ratio_mult: float = _float("SAME_SYMBOL_REENTRY_RATIO_MULT", 0.45)
+    same_symbol_reentry_priority_penalty: float = _float("SAME_SYMBOL_REENTRY_PRIORITY_PENALTY", 0.05)
+    same_symbol_reentry_loss_priority_penalty: float = _float("SAME_SYMBOL_REENTRY_LOSS_PRIORITY_PENALTY", 0.08)
+    short_risky_same_symbol_reentry_block_enabled: bool = _bool("SHORT_RISKY_SAME_SYMBOL_REENTRY_BLOCK_ENABLED", "true")
+    short_bb_event_mtf_block_enabled: bool = _bool("SHORT_BB_EVENT_MTF_BLOCK_ENABLED", "true")
+    short_bb_event_mtf_min_agree_ratio: float = _float("SHORT_BB_EVENT_MTF_MIN_AGREE_RATIO", 0.5)
     # [2026-08-06] 익절로 끝난 직후엔 이 시간(분) 동안 같은 심볼 재진입을 아예 금지한다
     # (손절 후 재진입은 그대로 허용, 비중축소만 적용 — HFTUSDT 익절 30초 후 재진입->손절 실측)
     post_win_reentry_cooldown_min: float = _float("POST_WIN_REENTRY_COOLDOWN_MIN", 5.0)
@@ -602,7 +998,10 @@ class Config:
     # 0 근처까지 떨어져 "계산된 수량이 0 이하"로 진입 자체가 스킵되는 문제 실측(실거래
     # 사후검증: 스킵된 80건을 진입시켰다고 가정 시 승률 80.8%). 아무리 배율이 겹쳐도
     # 최초 비중(base_ratio_before_defense)의 이 비율 밑으로는 안 내려가도록 하한을 둔다.
-    defense_stack_min_ratio_mult: float = _float("DEFENSE_STACK_MIN_RATIO_MULT", 0.30)
+    # [2026-08-17 운영 복기] 여러 방어배율이 겹쳐도 하한으로 다시 비중을 올려주는 기본값은,
+    # "나쁜 거래라도 너무 작아지지는 않게" 만드는 효과가 있었다. 손익 저하 국면에선 보호보다
+    # 거래수 유지에 치우친 선택이라 기본은 비활성화(0)로 되돌린다.
+    defense_stack_min_ratio_mult: float = _float("DEFENSE_STACK_MIN_RATIO_MULT", 0.0)
 
     # [2026-08-12 사용자요청] "순환매매를 하려는데 돌파매매(꼭대기 추격)가 되어 진입 직후
     # 전부 -부터 시작한다"는 실거래 문제 확인. 최근1시간 LONG진입 실측: 진입가가 직전20분
@@ -612,9 +1011,34 @@ class Config:
     entry_range_position_filter_enabled: bool = _bool("ENTRY_RANGE_POSITION_FILTER_ENABLED", "true")
     entry_range_position_lookback_min: int = _int("ENTRY_RANGE_POSITION_LOOKBACK_MIN", 20)
     entry_range_position_max_pct: float = _float("ENTRY_RANGE_POSITION_MAX_PCT", 70.0)
+    entry_range_position_long_max_pct: float = _float("ENTRY_RANGE_POSITION_LONG_MAX_PCT", 65.0)
 
     # 2봉 연속 확인: 신호가 처음 뜬 캔들 다음에도 같은 방향이 유지돼야 진입 (가짜 신호 필터)
     require_two_candle_confirmation: bool = _bool("REQUIRE_TWO_CANDLE_CONFIRMATION", "true")
+
+    # [2026-08-15 사용자요청] 체결(aggTrade) 스트림 기반 조기진입 신호 - 기본 비활성화.
+    # detect_volume_spike()로 최근 N초 체결대금 급증을 감지해 1분봉 완성 대기 없이 더
+    # 빠르게 방향을 확인하려는 실험적 경로. 라이브에 아직 연결되지 않았고(테스트/백테스트
+    # 전용), 이 플래그가 false면 기존 로직과 100% 동일하게 동작한다(no-op).
+    spike_entry_enabled: bool = _bool("SPIKE_ENTRY_ENABLED", "false")
+    spike_entry_multiplier: float = _float("SPIKE_ENTRY_MULTIPLIER", 3.0)
+    spike_entry_window_sec: float = _float("SPIKE_ENTRY_WINDOW_SEC", 10.0)
+    spike_entry_baseline_sec: float = _float("SPIKE_ENTRY_BASELINE_SEC", 300.0)
+    # [2026-08-16 §3-A 후속] aggTrade 워커 구현 선택 스위치. 기본값 false로 두어,
+    # 명시적으로 켜지 않는 한 기존 python-binance 경로가 그대로 유지된다(하위호환/안전).
+    # raw websockets V2는 메인넷 선물 market 라우팅 수정 후 독립 QA에선 정상 수신이
+    # 확인됐지만, 라이브 복귀는 별도 승인 후 단계적으로 진행한다.
+    ws_trade_use_v2: bool = _bool("WS_TRADE_USE_V2", "false")
+    # [2026-08-15 09:40] 70심볼을 단일 프로세스에 몰아넣었더니(샤드1개) read loop 버그
+    # 재발빈도가 60분 소크테스트 때보다 훨씬 높았음(20분새 3회) — ws_market_shard_count와
+    # 동일한 이유로 샤딩 도입. 기본값 1(하위호환, 기존 단일워커와 동일), .env에서 2로 올림.
+    ws_trade_shard_count: int = _int("WS_TRADE_SHARD_COUNT", 1)
+    # [2026-08-15 대안3: 예방적 재시작] 단일워커/샤딩 둘 다 read loop 버그 재발 자체를 못
+    # 막았음(20분새 여러 차례) — 버그가 나길 기다렸다 잡는 대신, 문제가 있든 없든 이 주기마다
+    # 무조건 재시작해서 "하나의 tight loop가 오래 지속되는 시간" 자체를 원천적으로 짧게
+    # 자른다. 0이면 비활성화(기존과 동일 — process_exited/heartbeat_stale/error_count
+    # 기반 반응형 재시작만 동작). 기본 0(옵트인), .env에서 활성화.
+    ws_trade_preemptive_restart_sec: float = _float("WS_TRADE_PREEMPTIVE_RESTART_SEC", 0.0)
 
     def validate(self):
         if not self.api_key or not self.api_secret:

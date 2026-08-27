@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,34 @@ class SupervisorHeartbeatTests(unittest.TestCase):
             with patch.object(run_forever, "HEARTBEAT_PATH", heartbeat_path):
                 age = run_forever.heartbeat_age_sec(process_started_at=3500, now=3799)
         self.assertEqual(age, 299)
+
+    def test_transient_read_failure_after_long_healthy_run_does_not_look_stale(self):
+        """[2026-08-15 실측 오탐] 325분(19514초) 정상 운행 중이던 프로세스가, 하트비트
+        파일을 하필 write_text() 도중(비원자적 쓰기) 읽어서 파싱 실패(heartbeat_timestamp()
+        가 None)를 만난 순간 process_started_at까지 되돌아가버려 "19514초 동안 정지"로
+        오판, 실제로는 몇십초 전까지 정상 갱신 중이던 프로세스를 강제종료한 사고가 있었다.
+        last_known_at(직전에 성공적으로 읽은 값)을 process_started_at보다 우선 사용해야
+        이런 찰나의 읽기 실패 한 번으로 나이가 프로세스 가동시간까지 튀지 않는다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            heartbeat_path = Path(tmp) / "heartbeat.txt"
+            heartbeat_path.write_text("", encoding="utf-8")  # write_text() 도중을 재현(파싱 실패)
+            with patch.object(run_forever, "HEARTBEAT_PATH", heartbeat_path):
+                # 프로세스는 5시간 넘게 떠 있었지만, 마지막으로 성공했던 하트비트는 3초 전.
+                age = run_forever.heartbeat_age_sec(
+                    process_started_at=1000, now=19514 + 1003, last_known_at=19514 + 1000
+                )
+        self.assertEqual(age, 3)  # 19514초(=process_started_at 기준 오탐값)가 아니라 3초여야 함
+
+    def test_genuinely_frozen_heartbeat_is_still_detected_even_with_last_known_at(self):
+        """last_known_at을 들고 있어도, 진짜로 하트비트가 멈추면(last_known_at 자체가 계속
+        오래돼감) 정상적으로 오래된 것으로 잡혀야 한다 — 오탐 방지가 실제 정지 감지를
+        무력화하면 안 된다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            heartbeat_path = Path(tmp) / "heartbeat.txt"
+            heartbeat_path.write_text("1000", encoding="utf-8")
+            with patch.object(run_forever, "HEARTBEAT_PATH", heartbeat_path):
+                age = run_forever.heartbeat_age_sec(process_started_at=900, now=1700, last_known_at=1000)
+        self.assertEqual(age, 700)
 
 
 class SupervisorRamAutoRecoveryTests(unittest.TestCase):
@@ -63,6 +92,14 @@ class SupervisorRamAutoRecoveryTests(unittest.TestCase):
             run_forever.free_ram_if_low()
         killed_targets = [call.args[0][2] for call in mock_run.call_args_list]  # taskkill /IM <name> /F
         self.assertEqual(killed_targets, run_forever.KNOWN_SAFE_TO_CLOSE)
+
+    def test_does_not_kill_anything_when_safe_target_list_is_empty(self):
+        with patch.object(run_forever, "get_available_ram_mb", return_value=200.0), \
+             patch.object(run_forever, "KNOWN_SAFE_TO_CLOSE", []), \
+             patch("run_forever.subprocess.run") as mock_run, \
+             patch.object(run_forever, "log"):
+            run_forever.free_ram_if_low()
+        mock_run.assert_not_called()
 
     def test_never_targets_live_trading_or_dashboard_processes(self):
         """매매/모니터링 관련 프로세스명이 실수로라도 목록에 섞이지 않았는지 고정 검증."""
@@ -101,6 +138,22 @@ class FastCrashBackoffTests(unittest.TestCase):
         """첫 크래시는 지금까지와 동일하게 즉각 재시도(RESTART_DELAY_SEC)해야 정상 일시적
         오류(네트워크 순간 끊김 등)에서 불필요하게 느려지지 않는다."""
         self.assertEqual(run_forever.FAST_CRASH_BACKOFF_SEC[0], run_forever.RESTART_DELAY_SEC)
+
+
+class SupervisorSingleInstanceLockTests(unittest.TestCase):
+    def test_second_supervisor_instance_exits_with_duplicate_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock_path = Path(tmp) / ".run_forever.lock"
+            # [2026-08-25] 전역 커널 뮤텍스를 그대로 쓰면 라이브 봇이 돌고 있을 때
+            # 첫 acquire부터 실패해서 "봇이 켜져 있으면 깨지는 테스트"가 된다.
+            # 테스트 전용 이름으로 격리한다.
+            unique_mutex = r"Local\BinanceFuturesBotSupervisorTest%d" % os.getpid()
+            with patch.object(run_forever, "SUPERVISOR_LOCK_PATH", lock_path),                  patch.object(run_forever, "SUPERVISOR_MUTEX_NAME", unique_mutex),                  patch.object(run_forever, "_SUPERVISOR_MUTEX", None):
+                first = run_forever.acquire_supervisor_lock()
+                with self.assertRaises(SystemExit) as ctx:
+                    run_forever.acquire_supervisor_lock()
+                first.close()
+        self.assertEqual(ctx.exception.code, run_forever.DUPLICATE_INSTANCE_EXIT_CODE)
 
 
 if __name__ == "__main__":

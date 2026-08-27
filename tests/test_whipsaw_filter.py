@@ -190,6 +190,20 @@ class WhipsawFilterTests(unittest.TestCase):
         ex = FakeExchange(df)
         self.assertTrue(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
 
+    def test_entry_range_position_uses_stricter_long_specific_cap_when_configured(self):
+        cfg = Config()
+        cfg.entry_range_position_lookback_min = 3
+        cfg.entry_range_position_max_pct = 70.0
+        cfg.entry_range_position_long_max_pct = 65.0
+        # 직전 3분 범위 [100, 110], 마지막 종가 107 -> 위치 70%
+        df = pd.DataFrame([
+            {"open": 100.0, "high": 105.0, "low": 100.0, "close": 103.0},
+            {"open": 103.0, "high": 110.0, "low": 102.0, "close": 108.0},
+            {"open": 108.0, "high": 109.0, "low": 106.0, "close": 107.0},
+        ])
+        ex = FakeExchange(df)
+        self.assertFalse(passes_entry_range_position_filter(ex, cfg, "EPICUSDT", "LONG"))
+
     def test_entry_range_position_blocks_short_chasing_bottom(self):
         """SHORT는 대칭적으로 범위 하단 근처(바닥 추격매도)를 막는다."""
         cfg = Config()

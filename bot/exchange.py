@@ -11,6 +11,10 @@ from .config import Config
 
 log = logging.getLogger("bot.exchange")
 
+# [2026-08-26] 정산일이 이 일수 안으로 잡힌 무기한 심볼은 신규 스캔 대상에서 뺀다.
+# 폐지 예정이 공지되면 그 순간부터 거래할 이유가 없으므로 넉넉하게 잡는다.
+DELIST_EXCLUDE_DAYS = 30.0
+
 _BAN_UNTIL_RE = re.compile(r"banned until (\d+)")
 
 
@@ -41,7 +45,14 @@ class Exchange:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.client = Client(cfg.api_key, cfg.api_secret, testnet=cfg.use_testnet)
+        # [2026-08-26 P0] REST 호출에 타임아웃을 건다. 지금까지 아무 데도 없었다.
+        # python-binance 는 requests 세션을 쓰는데 timeout 이 없으면 커넥션이 끊긴 채
+        # 응답이 안 오면 **영원히 블록**된다. 실사고: 봇이 11:19 에 멈춰 12분간 아무것도
+        # 하지 않았고(CPU 25초에 0.078초), 그 사이 체결된 ONGUSDT 포지션에 손절이
+        # 걸리지 않았다. 로그도 상태파일도 그 시각에서 정지했다.
+        # 10초면 정상 응답(수십~수백 ms)에는 여유가 크고, 멈춘 커넥션은 확실히 끊는다.
+        self.client = Client(cfg.api_key, cfg.api_secret, testnet=cfg.use_testnet,
+                             requests_params={"timeout": 10})
         self._symbol_info_cache = {}
         # [2026-08-10] WebSocket 캔들/체결 레이어 연결점. 둘 다 기본 None이라 main()에서
         # set_ws_kline_cache()/set_fill_tracker()를 명시적으로 호출하지 않는 한(옵트인 플래그가
@@ -79,20 +90,55 @@ class Exchange:
     def setup_symbol(self, symbol: str):
         self.set_leverage(symbol, self.cfg.leverage_min)
 
-    def set_leverage(self, symbol: str, leverage: int):
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """[2026-08-15 사용자신고] 실패해도 경고만 남기고 True/False를 안 돌려줘서, 호출측이
+        "설정이 안 먹은 채로 주문이 나가는" 상황을 알 수 없었다(실측: -4028 "Leverage 5 is
+        not valid" 7건). 성공 여부를 반환해 호출측이 판단할 수 있게 한다."""
         try:
             self.client.futures_change_leverage(symbol=symbol, leverage=leverage)
+            return True
         except BinanceAPIException as e:
             log.warning("레버리지 설정 실패 %s: %s", symbol, e)
+            return False
 
-    def set_margin_type(self, symbol: str, margin_type: str):
+    def set_margin_type(self, symbol: str, margin_type: str) -> bool:
         """마진 타입을 ISOLATED(격리) 또는 CROSSED(교차)로 설정한다.
-        이미 그 타입이면 바이낸스가 에러(-4046)를 주는데, 정상 상황이라 무시한다."""
+        이미 그 타입이면 바이낸스가 에러(-4046)를 주는데, 정상 상황이라 성공으로 취급한다.
+
+        [2026-08-15 사용자신고] -4067("Position side cannot be changed if there exists open
+        orders")이 64건 쌓여 있었다 — 봇은 보유 심볼에 STOP_MARKET/트레일링 주문을 항상
+        걸어두므로 이 실패가 상시 발생할 조건이다. 실패를 삼키면 심볼이 CROSSED로 남은 채
+        진입이 진행돼, 2026-08-09에 격리로 전환한 이유(한 포지션 손실이 계좌 전체를 갉아먹는
+        것 방지)가 그대로 뚫린다. 성공 여부를 반환한다."""
         try:
             self.client.futures_change_margin_type(symbol=symbol, marginType=margin_type)
+            return True
         except BinanceAPIException as e:
-            if getattr(e, "code", None) != -4046:
-                log.warning("마진 타입 설정 실패 %s: %s", symbol, e)
+            if getattr(e, "code", None) == -4046:
+                return True  # 이미 원하는 타입 — 정상
+            log.warning("마진 타입 설정 실패 %s: %s", symbol, e)
+            return False
+
+    def get_symbol_risk_settings(self, symbol: str) -> dict | None:
+        """[2026-08-15 추가] 그 심볼의 거래소 실제 레버리지/마진모드를 조회한다.
+        futures_position_information 응답에는 leverage/isolated가 없는 계정/모드가 있어
+        (실측 확인) futures_account()의 positions에서 읽는다. 무거운 호출이므로
+        set_leverage/set_margin_type이 실패했을 때만 확인용으로 부른다.
+
+        반환: {"leverage": float, "isolated": bool} 또는 조회 실패 시 None."""
+        try:
+            account = self.client.futures_account()
+            for p in account.get("positions", []):
+                if p.get("symbol") != symbol:
+                    continue
+                try:
+                    lev = float(p.get("leverage"))
+                except (TypeError, ValueError):
+                    lev = None
+                return {"leverage": lev, "isolated": bool(p.get("isolated"))}
+        except Exception:
+            log.exception("[%s] 심볼 리스크 설정 조회 실패", symbol)
+        return None
 
     def get_klines(self, symbol: str, limit: int = 99, interval: str | None = None) -> pd.DataFrame:
         # [2026-08-10] WS 캔들 캐시가 연결돼 있고(옵트인), 요청한 것과 같은 interval이며,
@@ -164,6 +210,13 @@ class Exchange:
         return {
             "bid": float(ticker["bidPrice"]),
             "ask": float(ticker["askPrice"]),
+        }
+
+    def get_24h_ticker(self, symbol: str) -> dict:
+        ticker = self.client.futures_ticker(symbol=symbol)
+        return {
+            "price_change_pct": float(ticker.get("priceChangePercent", 0.0) or 0.0),
+            "quote_volume": float(ticker.get("quoteVolume", 0.0) or 0.0),
         }
 
     def get_funding_rate_pct(self, symbol: str) -> float:
@@ -370,6 +423,7 @@ class Exchange:
                     "symbol": p["symbol"],
                     "amount": amt,
                     "entry_price": float(p["entryPrice"]),
+                    "mark_price": float(p.get("markPrice", 0.0) or 0.0),
                     "side": "LONG" if amt > 0 else "SHORT",
                     "leverage": self._infer_leverage(p),
                 })
@@ -382,12 +436,26 @@ class Exchange:
         너무 많은 심볼을 매 주기마다 스캔하면 바이낸스 API 요청 한도(분당 2400)를
         초과하기 쉽고, 유동성 낮은 코인은 스캘핑에도 적합하지 않다.
         """
+        # [2026-08-26] 상장폐지 예정 심볼을 제외한다.
+        # 폐지 예정이어도 정산 직전까지 status 는 계속 "TRADING" 이라 종전 필터로는
+        # 걸러지지 않았다. 구분은 deliveryDate 에 있다 — 정상 무기한은 전부
+        # 4133404800000(2100-12-25) 센티넬이고(실측 524개 전부 동일),
+        # 폐지 예정 심볼에만 실제 정산 시각이 들어간다(실측 3개).
+        # 정산되면 바이낸스가 **마크가격으로 강제 청산**하므로 봇이 걸어둔 SL/TP 가
+        # 아예 작동하지 않는다. 그 전에도 유동성이 마르고 스프레드가 벌어진다.
+        # 실사고 직전: STORJUSDT(오늘 18:00 정산)가 85심볼 유니버스에 들어와
+        # 오늘만 10건 거래됐다.
+        # 거래수 영향은 85개 중 1개(-1.2%)로 사실상 없다(원칙 1 무관).
+        _now_ms = time.time() * 1000
+        _cut_ms = _now_ms + max(0.0, DELIST_EXCLUDE_DAYS) * 86400_000
         info = self.client.futures_exchange_info()
         symbols = [
             s["symbol"] for s in info["symbols"]
             if s.get("quoteAsset") == "USDT"
             and s.get("contractType") == "PERPETUAL"
             and s.get("status") == "TRADING"
+            # deliveryDate 가 0/누락이면 정보 없음으로 보고 통과시킨다(기존 동작 유지).
+            and not (0 < float(s.get("deliveryDate") or 0) < _cut_ms)
         ]
         if not limit:
             return symbols
@@ -417,6 +485,38 @@ class Exchange:
             symbol=symbol, side=order_side, type="LIMIT", quantity=quantity,
             price=price, timeInForce="GTC",
         )
+
+    def close_limit_position(self, symbol: str, side: str, quantity: float, price: float):
+        """reduceOnly 지정가 청산. LONG 포지션은 SELL, SHORT 포지션은 BUY 주문을 낸다.
+
+        [2026-08-23 실거래 수정] 시장가 청산과 달리 여기엔 -2022(ReduceOnly 거부) 재시도가
+        없어, TP/EARLY_EXIT/모멘텀 잠금처럼 지정가 청산을 쓰는 경로에서 포지션 수량이
+        미세하게 어긋나면 그대로 실패했다. 같은 방식으로 실제 포지션을 재조회해 1회만
+        재시도해 즉시 복구한다.
+        """
+        order_side = "SELL" if side == "LONG" else "BUY"
+        price = self.round_price(symbol, price)
+        log.info("지정가 청산 주문: %s %s qty=%s price=%s", symbol, order_side, quantity, price)
+        try:
+            return self.client.futures_create_order(
+                symbol=symbol, side=order_side, type="LIMIT", quantity=quantity,
+                price=price, timeInForce="GTC", reduceOnly=True,
+            )
+        except BinanceAPIException as e:
+            if getattr(e, "code", None) != -2022:
+                raise
+            log.warning("%s 지정가 청산 -2022(ReduceOnly 거부) — 실제 보유수량 재조회 후 즉시 재시도", symbol)
+            live = self.get_position(symbol)
+            if live is None or live["amount"] == 0:
+                log.info("%s 재조회 결과 이미 포지션 없음 — 지정가 청산 불필요(이미 종료됨)", symbol)
+                return None
+            live_qty = abs(live["amount"])
+            live_side = "SELL" if live["side"] == "LONG" else "BUY"
+            log.info("%s 재조회 실제수량=%s(side=%s)로 지정가 청산 재시도", symbol, live_qty, live["side"])
+            return self.client.futures_create_order(
+                symbol=symbol, side=live_side, type="LIMIT", quantity=live_qty,
+                price=price, timeInForce="GTC", reduceOnly=True,
+            )
 
     def get_order_status(self, symbol: str, order_id: int) -> dict:
         return self.client.futures_get_order(symbol=symbol, orderId=order_id)
@@ -468,6 +568,13 @@ class Exchange:
         rounded = (Decimal(str(price)) / Decimal(str(tick))).to_integral_value(rounding=ROUND_DOWN) * Decimal(str(tick))
         return round(float(rounded), precision)
 
+    def format_price(self, symbol: str, price: float) -> str:
+        """API payload용 가격 문자열. 작은 가격이 8.3e-05처럼 과학 표기로 나가면 거부된다."""
+        f = self.get_symbol_filters(symbol)
+        precision = int(f["price_precision"])
+        rounded = self.round_price(symbol, price)
+        return f"{rounded:.{precision}f}"
+
     def place_stop_market(self, symbol: str, side: str, quantity: float, stop_price: float):
         """[2026-08-06] 진입 직후 거래소에 손절 주문을 걸어둔다 — 30초 폴링 사이 급락(실측:
         TAKEUSDT -20%, HFTUSDT -8.45%)에도 거래소가 즉시 반응하도록. side는 포지션 방향(LONG/SHORT).
@@ -477,11 +584,35 @@ class Exchange:
         futures_create_algo_order(신규 Algo Order 엔드포인트)로 재구현.
         """
         order_side = "SELL" if side == "LONG" else "BUY"
-        stop_price = self.round_price(symbol, stop_price)
+        stop_price = self.format_price(symbol, stop_price)
         log.info("STOP_MARKET(Algo) 주문 등록: %s %s qty=%s triggerPrice=%s", symbol, order_side, quantity, stop_price)
         return self.client.futures_create_algo_order(
             algoType="CONDITIONAL", symbol=symbol, side=order_side, type="STOP_MARKET",
             quantity=quantity, triggerPrice=stop_price, reduceOnly="true",
+        )
+
+    def place_stop_limit(self, symbol: str, side: str, quantity: float,
+                         stop_price: float, limit_price: float):
+        """[2026-08-27] 스탑-리밋 손절. 트리거되면 **지정가** 주문을 낸다.
+
+        시장가 손절은 taker(0.05%) + 스프레드 전액을 낸다. 실측(85심볼) 스프레드
+        중앙 0.0179% 라 손절 1건당 왕복비용의 절반 이상이 여기서 나온다.
+        지정가로 앉으면 maker(0.02%) 가 될 수 있다.
+
+        **다만 확실한 절감이 아니다.** 손절가는 정의상 현재가의 불리한 쪽이라,
+        트리거 순간 시세가 그 가격이다. 호가에 상대가 있으면 즉시 taker 로 먹히고,
+        없으면 maker 로 앉는다. 그리고 **급락으로 지나쳐 버리면 미체결로 남아
+        포지션이 무방어가 된다** - 호출부가 반드시 미체결 감시를 걸어야 한다.
+        """
+        order_side = "SELL" if side == "LONG" else "BUY"
+        stop_price = self.format_price(symbol, stop_price)
+        limit_price = self.format_price(symbol, limit_price)
+        log.info("STOP(Algo, 지정가) 주문 등록: %s %s qty=%s trigger=%s limit=%s",
+                 symbol, order_side, quantity, stop_price, limit_price)
+        return self.client.futures_create_algo_order(
+            algoType="CONDITIONAL", symbol=symbol, side=order_side, type="STOP",
+            quantity=quantity, triggerPrice=stop_price, price=limit_price,
+            timeInForce="GTC", reduceOnly="true",
         )
 
     def place_trailing_stop_market(self, symbol: str, side: str, quantity: float, activation_price: float, callback_rate: float):
@@ -544,6 +675,42 @@ class Exchange:
         duplicate reduceOnly stop.
         """
         return list(self.client.futures_get_open_algo_orders())
+
+    def cancel_orphan_algo_orders(self, held_symbols: set[str]) -> list[dict]:
+        """[2026-08-17 실거래 사고로 추가] 포지션이 없는 심볼에 남아 있는 조건부 주문을 정리한다.
+
+        사고: 거래소에 TRAILING_STOP_MARKET 4건이 고아로 남아 있었다(BTW/AIO/CYS/SPORTFUN).
+        전부 reduceOnly라 포지션이 없을 땐 잠자고 있다가, **그 심볼에 새로 진입하는 순간
+        즉시 발동해 방금 만든 포지션을 청산**한다. 사용자가 "진입하자마자 1초도 안 돼 매도된다"고
+        보고한 현상의 원인이다(실측: CYSUSDT 15:28:28 진입 → 15:29:44 거래소 직접 종료,
+        고아 주문은 14:12 생성분).
+
+        원인: 재시작 시 STOP_MARKET은 "거래소에서 발견해 채택"하는 로직이 있지만
+        TRAILING_STOP_MARKET에는 그 경로가 없어, 재시작마다 새로 등록하면서 옛 주문이 남는다.
+        고아 생성시각이 재시작 직전과 정확히 맞물린다(12:32:21/13:45:35/14:35:55).
+
+        근본 수정(트레일링 채택)은 범위가 크므로, 우선 기동 시 청소로 사고를 막는다.
+        반환: 취소한 주문 목록(로그/알림용)."""
+        cancelled: list[dict] = []
+        try:
+            orders = self.get_open_algo_orders()
+        except Exception:
+            log.exception("고아 조건부주문 조회 실패 — 이번 기동에서는 정리를 건너뜀")
+            return cancelled
+        for o in orders:
+            symbol = o.get("symbol")
+            if not symbol or symbol in held_symbols:
+                continue
+            try:
+                self.client.futures_cancel_algo_order(symbol=symbol, algoId=o["algoId"])
+                cancelled.append(o)
+                log.warning(
+                    "[%s] 포지션 없는 고아 조건부주문 취소: %s algoId=%s (신규 진입 즉시청산 방지)",
+                    symbol, o.get("orderType"), o.get("algoId"),
+                )
+            except Exception:
+                log.exception("[%s] 고아 조건부주문 취소 실패 algoId=%s", symbol, o.get("algoId"))
+        return cancelled
 
     def find_matching_stop_market_order(
         self,

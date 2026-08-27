@@ -90,31 +90,177 @@ def mtf_trend_alignment(ex, cfg: Config, symbol: str, side: str) -> tuple[int, i
     return agree, total
 
 
-def _direction_scores(df: pd.DataFrame, cfg: Config):
-    """방향별(LONG/SHORT) 신호 점수(최대 1)와 현재 캔들 값을 반환한다.
+def timeframe_trend_matches(ex, cfg: Config, symbol: str, side: str, interval: str) -> bool:
+    """Return whether one specific timeframe's EMA trend matches the side."""
+    try:
+        df = ex.get_klines(symbol, limit=max(cfg.ema_slow + 10, 60), interval=interval)
+    except Exception:
+        return False
+    if len(df) < cfg.ema_slow + 2:
+        return False
+    close = df["close"]
+    ema_fast = close.ewm(span=cfg.ema_fast, adjust=False).mean().iloc[-1]
+    ema_slow = close.ewm(span=cfg.ema_slow, adjust=False).mean().iloc[-1]
+    if side == "LONG":
+        return bool(ema_fast > ema_slow)
+    return bool(ema_fast < ema_slow)
 
-    [2026-08-04 재설계] 기존 6개 지표 투표 방식을 실측 백테스트로 검증한 결과 손익분기
-    승률에 못 미쳐 폐기. 이후 MACD모멘텀+거래량 방식으로 교체했으나, 이 역시 8/6 재검증
-    (모멘텀/평균회귀/채널돌파/ADX+테이커쏠림/RSI/EMA/OI+롱숏비율 등 13차례, 1000개+ 조합)에서
-    전부 손익분기를 못 넘겨 폐기.
 
-    [2026-08-06 펌프감지 재설계] 대신 "이미 크게 움직이기 시작한 캔들(변동폭+거래량 급증)에
-    올라타는" 방식을 72시간/200심볼 교차검증한 결과, 승률 37%대(손익분기 30.9%, TP8%/SL3%
-    기준)로 EV가 유의미하게 양전인 유일한 신호로 확인됨. 승률 자체는 낮지만 익절:손절
-    비율을 크게(8:3) 벌려서 "자주 틀려도 크게 먹는" 비대칭 구조로 이긴다 — 필터(추세일치/
-    RSI과열회피/테이커확인 등)를 추가해도 승률이 안 오르고 표본만 줄어 오히려 손해임을
-    확인했으므로 필터 없이 순수 변동폭+거래량 조건만 사용한다.
+def _signal_component_snapshot(df: pd.DataFrame, cfg: Config) -> dict:
+    """Return the current EMA/BB signal building blocks for observability.
+
+    scan_entry_candidate() logs signal_missing very frequently. Keeping this
+    logic in one helper lets the live scan and offline analysis inspect the
+    same conditions without re-implementing them in multiple places.
     """
     curr = df.iloc[-1]
+    prev = df.iloc[-2]
+    slope_lookback = max(1, int(getattr(cfg, "ema_slope_lookback", 2)))
+    breakout_lookback = max(1, int(getattr(cfg, "bb_breakout_lookback", 1)))
+    slope_idx = max(0, len(df) - 1 - slope_lookback)
+    ema_fast_past = float(df.iloc[slope_idx]["ema_fast"])
+    ema_slow_past = float(df.iloc[slope_idx]["ema_slow"])
+    ema_fast_slope = float(curr["ema_fast"] - ema_fast_past)
+    ema_slow_slope = float(curr["ema_slow"] - ema_slow_past)
+    close_price = max(float(curr["close"]), 1e-12)
+    ema_fast_slope_pct = ema_fast_slope / close_price * 100
+    ema_slow_slope_pct = ema_slow_slope / close_price * 100
+    slope_tolerance_pct = max(
+        0.0, float(getattr(cfg, "ema_slope_relation_tolerance_pct", 0.0))
+    )
+    ema_gap_pct = abs(float(curr["ema_fast"] - curr["ema_slow"])) / max(float(curr["close"]), 1e-12) * 100
+    ema_gap_ok = ema_gap_pct >= max(0.0, float(getattr(cfg, "ema_gap_min_pct", 0.10)))
 
-    candle_chg_pct = ((curr["close"] / curr["open"]) - 1) * 100 if curr["open"] else 0.0
-    volume_ratio = (curr["volume"] / curr["volume_ma"]) if curr["volume_ma"] else 0.0
+    curr_bb_width = float(curr["bb_high"] - curr["bb_low"])
+    prev_start = max(0, len(df) - 1 - breakout_lookback)
+    prev_width_window = df.iloc[prev_start:len(df) - 1]
+    prev_bb_width = float((prev_width_window["bb_high"] - prev_width_window["bb_low"]).mean()) if len(prev_width_window) else curr_bb_width
+    width_ratio = (curr_bb_width / prev_bb_width) if prev_bb_width > 0 else 1.0
+    width_expanding = width_ratio >= float(getattr(cfg, "bb_width_expansion_ratio", 1.01))
 
-    pump_up = candle_chg_pct >= cfg.pump_min_candle_chg_pct and volume_ratio >= cfg.pump_min_volume_ratio
-    pump_down = candle_chg_pct <= -cfg.pump_min_candle_chg_pct and volume_ratio >= cfg.pump_min_volume_ratio
+    # EMA direction is the base score. Price location is kept as a bonus
+    # signal, not a hard gate, so BB events do not disappear in a 3m swing.
+    long_trend_soft = (
+        curr["ema_fast"] > curr["ema_slow"]
+        and ema_fast_slope > 0
+        and ema_fast_slope_pct >= ema_slow_slope_pct - slope_tolerance_pct
+    )
+    short_trend_soft = (
+        curr["ema_fast"] < curr["ema_slow"]
+        and ema_fast_slope < 0
+        and ema_fast_slope_pct <= ema_slow_slope_pct + slope_tolerance_pct
+    )
+    long_trend = long_trend_soft and ema_gap_ok
+    short_trend = short_trend_soft and ema_gap_ok
 
-    long_score = 1 if pump_up else 0
-    short_score = 1 if pump_down else 0
+    long_mid_reclaim_raw = (
+        prev["low"] <= prev["bb_mid"]
+        and curr["low"] >= curr["bb_mid"]
+        and curr["close"] > prev["high"]
+        and curr["close"] >= curr["open"]
+    )
+    short_mid_reject_raw = (
+        prev["high"] >= prev["bb_mid"]
+        and curr["high"] <= curr["bb_mid"]
+        and curr["close"] < prev["low"]
+        and curr["close"] <= curr["open"]
+    )
+    long_mid_reclaim = long_mid_reclaim_raw and width_expanding
+    short_mid_reject = short_mid_reject_raw and width_expanding
+
+    long_band_break_raw = (
+        prev["close"] <= prev["bb_high"]
+        and curr["close"] >= curr["bb_high"]
+        and curr["close"] > prev["high"]
+    )
+    short_band_break_raw = (
+        prev["close"] >= prev["bb_low"]
+        and curr["close"] <= curr["bb_low"]
+        and curr["close"] < prev["low"]
+    )
+    long_band_break = long_band_break_raw and width_expanding
+    short_band_break = short_band_break_raw and width_expanding
+    return {
+        "curr": curr,
+        "ema_gap_pct": float(ema_gap_pct),
+        "ema_gap_ok": bool(ema_gap_ok),
+        "ema_fast_slope": float(ema_fast_slope),
+        "ema_slow_slope": float(ema_slow_slope),
+        "ema_fast_slope_pct": float(ema_fast_slope_pct),
+        "ema_slow_slope_pct": float(ema_slow_slope_pct),
+        "ema_slope_relation_tolerance_pct": float(slope_tolerance_pct),
+        "width_ratio": float(width_ratio),
+        "width_expanding": bool(width_expanding),
+        "long_trend_soft": bool(long_trend_soft),
+        "short_trend_soft": bool(short_trend_soft),
+        "long_trend": bool(long_trend),
+        "short_trend": bool(short_trend),
+        "long_mid_reclaim_raw": bool(long_mid_reclaim_raw),
+        "short_mid_reject_raw": bool(short_mid_reject_raw),
+        "long_mid_reclaim": bool(long_mid_reclaim),
+        "short_mid_reject": bool(short_mid_reject),
+        "long_band_break_raw": bool(long_band_break_raw),
+        "short_band_break_raw": bool(short_band_break_raw),
+        "long_band_break": bool(long_band_break),
+        "short_band_break": bool(short_band_break),
+    }
+
+
+def _direction_scores(df: pd.DataFrame, cfg: Config):
+    """방향별(LONG/SHORT) 진입 점수(최대 2)와 현재 캔들 값을 반환한다.
+
+    사용자가 요구한 현재 관점은 "1분/3분 미니스윙 + 볼밴/EMA 중심"이다.
+    그래서 방향 점수도 아래 두 축만 본다.
+
+    1. EMA 추세: LONG은 ema_fast > ema_slow, SHORT은 반대
+    2. 볼밴 이벤트:
+       - 재진입/리클레임: BB 중단선 근처를 찍고 방향 쪽으로 되돌림
+       - 추세 지속: 상단/하단 밴드 돌파를 종가로 유지
+
+    15분/30분 MTF는 별도 가산점일 뿐, 여기서 신호 자체를 뒤집지 않는다.
+    """
+    snapshot = _signal_component_snapshot(df, cfg)
+    curr = snapshot["curr"]
+
+    long_score = 0.0
+    short_score = 0.0
+
+    # 직전봉 재출발이 가장 우선이지만, 밴드 확장 동반 돌파도 같은 1점으로 본다.
+    if snapshot["long_trend"]:
+        long_score += 1
+    if snapshot["short_trend"]:
+        short_score += 1
+    if getattr(cfg, "bb_mid_reclaim_entry_enabled", True) and snapshot["long_mid_reclaim"]:
+        long_score += 1
+    elif (
+        getattr(cfg, "bb_mid_reclaim_entry_enabled", True)
+        and snapshot["long_trend_soft"]
+        and snapshot["long_mid_reclaim_raw"]
+    ):
+        long_score += max(0.0, min(1.0, float(getattr(cfg, "bb_width_soft_score", 0.5))))
+    if getattr(cfg, "bb_mid_reclaim_entry_enabled", True) and snapshot["short_mid_reject"]:
+        short_score += 1
+    elif (
+        getattr(cfg, "bb_mid_reclaim_entry_enabled", True)
+        and snapshot["short_trend_soft"]
+        and snapshot["short_mid_reject_raw"]
+    ):
+        short_score += max(0.0, min(1.0, float(getattr(cfg, "bb_width_soft_score", 0.5))))
+    if getattr(cfg, "bb_breakout_entry_enabled", True):
+        breakout_score = max(0.0, min(1.0, float(getattr(cfg, "bb_breakout_entry_score", 0.5))))
+        if snapshot["long_band_break"]:
+            long_score += breakout_score
+        elif snapshot["long_trend_soft"] and snapshot["long_band_break_raw"]:
+            long_score += min(breakout_score, max(0.0, float(getattr(cfg, "bb_width_soft_score", 0.5))))
+        if snapshot["short_band_break"]:
+            short_score += breakout_score
+        elif snapshot["short_trend_soft"] and snapshot["short_band_break_raw"]:
+            short_score += min(breakout_score, max(0.0, float(getattr(cfg, "bb_width_soft_score", 0.5))))
+    # Band expansion is a state bonus, not a prerequisite. Mid reclaim and
+    # breakout remain the stronger event bonuses above.
+    if snapshot["width_expanding"]:
+        long_score += 0.25 if snapshot["long_trend"] else 0.0
+        short_score += 0.25 if snapshot["short_trend"] else 0.0
     return long_score, short_score, curr
 
 
@@ -144,15 +290,42 @@ def detect_reversal(df: pd.DataFrame, cfg: Config, side: str, min_votes: int | N
 
 
 def estimate_entry_probability(matched_count: int, adx_value: float, adx_cap: float = 25.0) -> float:
-    """신호 신뢰도(재설계 후 최대 2개 중 몇 개 일치: MACD모멘텀가속, 거래량)와 추세 강도(ADX)를
-    결합해 진입 성공(수익 전환) 확률을 0.0~1.0으로 추정한다. 변동성(ATR)은 반등/역행 위험도
-    같이 키우므로 이 확률 추정에는 포함하지 않는다.
+    """신호 신뢰도(EMA 방향성과 BB 이벤트 중 몇 개가 맞는지)와 추세 강도(ADX)를 결합해
+    진입 성공 확률 추정치를 만든다. 변동성(ATR)은 반등/역행 위험도 같이 키우므로
+    이 확률 추정에는 포함하지 않는다.
 
     1분봉 스캘핑 기준으로 판단하므로, adx_cap(기본 25)을 넘으면 만점을 준다.
     """
-    confirmation_ratio = matched_count / 1
+    confirmation_ratio = min(max(matched_count, 0), 2) / 2
     trend_component = min(adx_value / adx_cap, 1.0) if adx_cap > 0 else 0.0
     return confirmation_ratio * 0.6 + trend_component * 0.4
+
+
+def bb_participates(snapshot: dict, side: str) -> bool:
+    """볼린저밴드가 이 방향 판단에 실제로 관여했는지.
+
+    [2026-08-25 원칙0 정합] 원칙 0은 "볼밴 매매 + EMA(3분봉)"인데, 점수제에서 EMA 추세만으로
+    1.0점이 나오고 MIN_SIGNAL_CONFIRMATIONS=1이라 볼밴이 하나도 안 걸린 순수 EMA 진입이
+    통과하고 있었다. 여기서 "볼밴 관여"를 명시적으로 정의한다 —
+      - 중단선 리클레임/거부 이벤트, 또는
+      - 상/하단 밴드 돌파 이벤트, 또는
+      - 밴드 폭 확장 상태(가격 위치는 아니지만 볼밴 지표에서 나오는 판단 근거)
+    이벤트만 필수로 걸면 신호 공급이 16~18%까지 떨어져 원칙 1을 정면으로 깬다(3분봉 캐시
+    85심볼 5,270표본 실측). 밴드확장까지 볼밴 관여로 인정하면 LONG 73.1% / SHORT 64.4%가
+    남아 원칙 1 타격을 감당 가능한 수준으로 줄이면서 순수 EMA 진입만 배제한다.
+    """
+    if side == "LONG":
+        event = bool(snapshot["long_mid_reclaim_raw"] or snapshot["long_band_break_raw"])
+    else:
+        event = bool(snapshot["short_mid_reject_raw"] or snapshot["short_band_break_raw"])
+    return bool(event or snapshot["width_expanding"])
+
+
+def _bb_gate_ok(df: pd.DataFrame, cfg: Config, side: str) -> bool:
+    """cfg.bb_participation_required가 켜져 있을 때만 볼밴 관여를 강제한다(꺼져 있으면 기존 동작)."""
+    if not getattr(cfg, "bb_participation_required", False):
+        return True
+    return bb_participates(_signal_component_snapshot(df, cfg), side)
 
 
 def generate_signal(df: pd.DataFrame, cfg: Config, min_confirmations: int | None = None) -> str | None:
@@ -176,9 +349,9 @@ def generate_signal(df: pd.DataFrame, cfg: Config, min_confirmations: int | None
 
     long_score, short_score, _curr = _direction_scores(df, cfg)
     threshold = min_confirmations if min_confirmations is not None else cfg.min_confirmations
-    if long_score >= threshold and long_score >= short_score:
+    if long_score >= threshold and long_score >= short_score and _bb_gate_ok(df, cfg, "LONG"):
         return "LONG"
-    if short_score >= threshold and short_score > long_score:
+    if short_score >= threshold and short_score > long_score and _bb_gate_ok(df, cfg, "SHORT"):
         return "SHORT"
     return None
 
@@ -191,11 +364,62 @@ def generate_signal_with_probability(df: pd.DataFrame, cfg: Config, min_confirma
 
     long_score, short_score, curr = _direction_scores(df, cfg)
     threshold = min_confirmations if min_confirmations is not None else cfg.min_confirmations
-    if long_score >= threshold and long_score >= short_score:
+    if long_score >= threshold and long_score >= short_score and _bb_gate_ok(df, cfg, "LONG"):
         return "LONG", estimate_entry_probability(long_score, curr["adx"], cfg.probability_adx_cap)
-    if short_score >= threshold and short_score > long_score:
+    if short_score >= threshold and short_score > long_score and _bb_gate_ok(df, cfg, "SHORT"):
         return "SHORT", estimate_entry_probability(short_score, curr["adx"], cfg.probability_adx_cap)
     return None, 0.0
+
+
+def generate_frequency_signal_with_probability(
+    df: pd.DataFrame,
+    cfg: Config,
+    min_confirmations: int | None = None,
+) -> tuple[str | None, float, dict]:
+    """Return a narrowly-relaxed signal for the small frequency lane only.
+
+    This rescues near-miss EMA+BB setups that miss the main lane by a small
+    margin, typically because BB width or EMA gap is slightly late. It still
+    requires the EMA direction to point the same way and a real BB trigger.
+    """
+    warmup = max(cfg.ema_slow, cfg.macd_slow, cfg.bb_period, cfg.atr_period, cfg.adx_period, cfg.volume_ma_period)
+    if len(df) < warmup + cfg.macd_signal + 2:
+        return None, 0.0, {}
+    if not getattr(cfg, "frequency_lane_enabled", False) or not getattr(cfg, "frequency_lane_signal_enabled", False):
+        return None, 0.0, {}
+
+    long_score, short_score, curr = _direction_scores(df, cfg)
+    threshold = float(min_confirmations if min_confirmations is not None else cfg.min_confirmations)
+    relaxed_threshold = max(0.0, threshold - max(0.0, float(getattr(cfg, "frequency_lane_signal_score_discount", 0.5))))
+    snapshot = _signal_component_snapshot(df, cfg)
+
+    long_bb_trigger = bool(snapshot["long_mid_reclaim_raw"] or snapshot["long_band_break_raw"])
+    short_bb_trigger = bool(snapshot["short_mid_reject_raw"] or snapshot["short_band_break_raw"])
+    long_ok = (
+        snapshot["long_trend_soft"]
+        and long_bb_trigger
+        and long_score >= relaxed_threshold
+        and long_score > short_score
+    )
+    short_ok = (
+        snapshot["short_trend_soft"]
+        and short_bb_trigger
+        and short_score >= relaxed_threshold
+        and short_score > long_score
+    )
+    if long_ok:
+        return "LONG", estimate_entry_probability(long_score, curr["adx"], cfg.probability_adx_cap), {
+            "relaxed_threshold": float(relaxed_threshold),
+            "score": float(long_score),
+            "direction": "LONG",
+        }
+    if short_ok:
+        return "SHORT", estimate_entry_probability(short_score, curr["adx"], cfg.probability_adx_cap), {
+            "relaxed_threshold": float(relaxed_threshold),
+            "score": float(short_score),
+            "direction": "SHORT",
+        }
+    return None, 0.0, {}
 
 
 def immediate_momentum_ok(df: pd.DataFrame, side: str) -> bool:
@@ -283,6 +507,17 @@ def volume_direction_ok(df: pd.DataFrame, side: str, cfg: Config) -> bool:
     return bool(ratio <= 1 - threshold)
 
 
+def volume_increase_ok(df: pd.DataFrame, cfg: Config) -> bool:
+    if not getattr(cfg, "volume_increase_filter_enabled", True):
+        return True
+    curr = df.iloc[-1]
+    volume = float(curr.get("volume", 0.0) or 0.0)
+    volume_ma = float(curr.get("volume_ma", 0.0) or 0.0)
+    if volume_ma <= 0:
+        return True
+    return volume / volume_ma >= max(0.0, float(getattr(cfg, "volume_increase_min_ratio", 1.05)))
+
+
 def quick_profit_score(df: pd.DataFrame, cfg: Config, side: str) -> float:
     """이 코인이 최대 보유시간(max_hold_minutes) 안에 목표 익절선까지
     도달할 가능성이 얼마나 높은지를 0.0~1.0으로 추정한다 (수익을 보장하는 건
@@ -345,3 +580,38 @@ def should_take_profit(entry_price: float, mark_price: float, side: str, cfg: Co
 
 def should_stop_loss(entry_price: float, mark_price: float, side: str, cfg: Config) -> bool:
     return pnl_pct(entry_price, mark_price, side) <= -cfg.stop_loss_pct
+
+
+def spike_based_entry_signal(cache, symbol: str, side: str, cfg: Config, now_ms: int | None = None) -> bool:
+    """[2026-08-15] 체결(aggTrade) 스트림 기반 조기진입 게이트 - 실험적, 기존 PUMP_SIGNAL
+    (1분봉 완성 대기) 로직과 완전히 병행하는 별도 경로. 아직 어떤 라이브 진입 흐름에도
+    연결돼 있지 않다(cfg.spike_entry_enabled로 호출 여부를 결정하는 건 호출하는 쪽 책임).
+
+    detect_volume_spike()로 "최근 spike_entry_window_sec초 체결대금이 baseline 대비
+    spike_entry_multiplier배 이상"인지만 판단한다. 방향(테이커 매수/매도 비율)까지는 보지
+    않는다 - TradeTick에 개별 방향은 있지만 순수 거래량 급증만 신호로 쓰고, 실제 방향
+    판단은 여전히 기존 1분봉 지표(generate_signal_with_probability)가 담당한다는 설계.
+    cache가 None이거나 아직 데이터가 없으면 보수적으로 False.
+
+    [2026-08-15 라이브 배선] 실거래에서는 체결 원시 틱이 별도 프로세스(ws_trade_worker.py)
+    안에만 있고, 메인 프로세스는 그 워커가 상태파일에 남긴 "이미 계산된" 스파이크 판정만
+    읽는다(FileBackedSpikeCache) — 원시 틱을 프로세스 경계 밖으로 복제하는 무거운 방식을
+    피하기 위함. 이 cache가 그런 파일백드 리더면 is_spike()를 바로 쓰고, 테스트/백테스트처럼
+    진짜 TradeTickCache(get_recent 보유)가 오면 기존 방식(detect_volume_spike) 그대로 유지 —
+    기존 단위테스트 경로는 전혀 안 바뀐다."""
+    if cache is None:
+        return False
+    if hasattr(cache, "is_spike") and not hasattr(cache, "get_recent"):
+        try:
+            return bool(cache.is_spike(symbol))
+        except Exception:
+            return False
+    from .ws_trade_client import detect_volume_spike
+    result = detect_volume_spike(
+        cache, symbol,
+        spike_multiplier=cfg.spike_entry_multiplier,
+        spike_window_sec=cfg.spike_entry_window_sec,
+        baseline_window_sec=cfg.spike_entry_baseline_sec,
+        now_ms=now_ms,
+    )
+    return bool(result["is_spike"])

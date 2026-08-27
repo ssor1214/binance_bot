@@ -1,0 +1,59 @@
+{
+ "created_at": 1787130120.3370974,
+ "created_at_kst": "2026-08-19 18:02:00",
+ "change": {
+  "key": "RECENT_DEFENSE_MIN_MARGIN_USDT",
+  "before": 0.0,
+  "after": 1.4,
+  "effect": "최근성과 방어 발동시 증거금 하한 1.9 -> 1.4 (x0.74), 거래수 영향 없음"
+ },
+ "revert": "RECENT_DEFENSE_MIN_MARGIN_USDT=0 또는 줄 삭제 (코드 기본값 0.0)",
+ "baseline": {
+  "last_6h": {
+   "n": 54,
+   "win_rate": 62.96,
+   "pnl": -0.752,
+   "per_trade": -0.01393,
+   "profit_factor": 0.4061
+  },
+  "last_12h": {
+   "n": 91,
+   "win_rate": 58.24,
+   "pnl": -1.9861,
+   "per_trade": -0.02183,
+   "profit_factor": 0.3994
+  },
+  "last_24h": {
+   "n": 218,
+   "win_rate": 63.76,
+   "pnl": -2.4868,
+   "per_trade": -0.01141,
+   "profit_factor": 0.4193
+  }
+ },
+ "entry_rate_per_hour": {
+  "last_6h": 9.0,
+  "last_12h": 7.583,
+  "last_24h": 9.083
+ },
+ "simulation": {
+  "sample": 1863,
+  "period": "08-11~08-19",
+  "base": -46.606,
+  "applied": -41.177,
+  "improve": 5.428,
+  "walk_forward": {
+   "first": 2.99,
+   "second": 2.438
+  },
+  "daily_positive": 8,
+  "daily_negative": 1,
+  "note": "완전차단은 +20.878이나 거래수 -36%라 기각"
+ },
+ "judgment": {
+  "min_sample": 150,
+  "walk_forward_both_positive": true,
+  "entry_rate_must_not_drop": true,
+  "action_if_fail": "RECENT_DEFENSE_MIN_MARGIN_USDT=0 원복"
+ }
+}

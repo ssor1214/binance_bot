@@ -27,6 +27,11 @@ def make_cfg(**overrides):
     cfg.ws_kline_max_staleness_sec = 150.0
     cfg.ws_canary_max_staleness_sec = 150.0
     cfg.ws_market_shard_count = 1
+    # [2026-08-15] .env의 SPIKE_ENTRY_ENABLED가 라이브 배선 이후 true로 바뀌었다 — 이 테스트
+    # 파일은 market/user 워커 스폰 개수만 검증하는 게 목적이라, 다른 두 플래그처럼 spike도
+    # 명시적으로 꺼서 .env 상태와 완전히 격리한다(스파이크 워커 자체 검증은
+    # test_spike_entry_signal.py에서 별도로 함).
+    cfg.spike_entry_enabled = False
     for k, v in overrides.items():
         setattr(cfg, k, v)
     return cfg
@@ -333,6 +338,26 @@ class WsLayerNeedsRestartHealthBasedTests(unittest.TestCase):
             fake_cache_cls.return_value.is_fresh.return_value = True
             fake_cache_cls.return_value.health.return_value = {
                 "last_market_message_ts": now - 1,
+                "error_count_60s": 0,
+                "consecutive_read_loop_errors": 0,
+            }
+            self.assertEqual(ws_layer_needs_restart(cfg, self._handles_past_grace(), "BTCUSDT"), [])
+
+    def test_canary_stale_does_not_restart_when_live_message_flow_is_healthy(self):
+        cfg = make_cfg(
+            ws_market_data_enabled=True,
+            ws_message_max_staleness_sec=45.0,
+            ws_canary_max_staleness_sec=120.0,
+            ws_max_error_count_60s=100,
+            ws_max_consecutive_read_loop_errors=3,
+        )
+        now = 1000.0 + WS_WORKER_STARTUP_GRACE_SEC + 200
+        with patch("bot.main.time.time", return_value=now), \
+             patch("bot.main.FileBackedKlineCache") as fake_cache_cls:
+            fake_cache_cls.return_value.is_fresh.return_value = False
+            fake_cache_cls.return_value.health.return_value = {
+                "last_market_message_ts": now - 1,
+                "message_count_60s": 2500,
                 "error_count_60s": 0,
                 "consecutive_read_loop_errors": 0,
             }

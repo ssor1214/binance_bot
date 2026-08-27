@@ -34,12 +34,14 @@ class TelegramNotifier:
         self.pm = pm
         self.enabled = bool(cfg.telegram_bot_token and cfg.telegram_chat_id)
         self._offset = 0
+        self._thread = None
         self.trading_paused = False
         self._awaiting_confirmation = False
         self.daily_state = None  # main.py가 실행 중 daily_state dict를 연결해준다
         self._pending_tune = None  # 1시간 자동 분석이 제안한 변경안 (승인 대기 중)
         self._pending_tune_diagnosis = ""
         self._tune_history: list = []  # [{"ts", "changes", "decision"("applied"/"ignored"/"manual"), "diagnosis"}]
+        self._recent_skip_alerts: dict[tuple[str, str], float] = {}
 
     def _url(self, method: str) -> str:
         return f"{API_BASE.format(token=self.cfg.telegram_bot_token)}/{method}"
@@ -121,6 +123,20 @@ class TelegramNotifier:
 
     def notify_error(self, symbol: str, message: str):
         self.send(f"⚠️ {symbol} 오류\n{message}")
+
+    def notify_entry_skipped(self, symbol: str, reason: str, detail: str = "", cooldown_sec: int = 180):
+        """후보는 떴지만 실제 진입은 안 된 경우를 텔레그램에 짧게 알려준다.
+
+        같은 심볼/사유가 짧은 시간 안에 반복되면 중복 발송을 막아 스팸을 줄인다.
+        """
+        now = time.time()
+        key = (symbol, reason)
+        last_sent = self._recent_skip_alerts.get(key, 0.0)
+        if now - last_sent < cooldown_sec:
+            return
+        self._recent_skip_alerts[key] = now
+        suffix = f"\n{detail}" if detail else ""
+        self.send(f"🟠 진입 생략 {symbol}\n사유: {reason}{suffix}")
 
     def ask_daily_checkpoint(self, daily_pnl_pct: float, threshold: float):
         """일일 수익률이 체크포인트(목표 또는 목표+10%씩)에 도달하면 계속할지 물어본다.
@@ -637,5 +653,16 @@ class TelegramNotifier:
     def start_command_listener(self):
         if not self.enabled:
             return
+        if self._thread is not None and self._thread.is_alive():
+            return
         thread = threading.Thread(target=self._poll_loop, daemon=True)
         thread.start()
+        self._thread = thread
+        log.info("텔레그램 명령 리스너 시작됨")
+
+    def ensure_command_listener(self):
+        if not self.enabled:
+            return
+        if self._thread is None or not self._thread.is_alive():
+            log.warning("텔레그램 명령 리스너가 죽어 있어 재시작합니다")
+            self.start_command_listener()

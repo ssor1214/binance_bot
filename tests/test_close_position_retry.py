@@ -54,6 +54,7 @@ class FakeClient:
 def make_exchange(client):
     ex = Exchange.__new__(Exchange)
     ex.client = client
+    ex._symbol_info_cache = {"TESTUSDT": {"price_precision": 2, "tick_size": 0.01}}
     return ex
 
 
@@ -112,6 +113,42 @@ class CloseMarketPositionRetryTests(unittest.TestCase):
         with self.assertRaises(BinanceAPIException):
             ex.close_market_position("TESTUSDT", "LONG", 10.0)
         self.assertEqual(len(client.order_calls), 2)  # 1차 + 재시도 1회, 그 이상은 안 함
+
+
+class CloseLimitPositionRetryTests(unittest.TestCase):
+    def test_retries_with_live_quantity_on_2022(self):
+        position_info = [{"symbol": "TESTUSDT", "positionAmt": "7.5", "entryPrice": "100.0"}]
+        client = FakeClient(fail_times=1, position_info=position_info)
+        ex = make_exchange(client)
+        result = ex.close_limit_position("TESTUSDT", "LONG", 10.0, 101.23)
+        self.assertEqual(len(client.order_calls), 2)
+        self.assertEqual(client.order_calls[0]["type"], "LIMIT")
+        self.assertEqual(client.order_calls[0]["quantity"], 10.0)
+        self.assertEqual(client.order_calls[1]["quantity"], 7.5)
+        self.assertEqual(client.order_calls[1]["side"], "SELL")
+        self.assertEqual(client.order_calls[1]["price"], 101.23)
+        self.assertIsNotNone(result)
+
+    def test_returns_none_when_position_already_closed_on_retry(self):
+        client = FakeClient(fail_times=1, position_info=[])
+        ex = make_exchange(client)
+        result = ex.close_limit_position("TESTUSDT", "SHORT", 3.0, 99.87)
+        self.assertEqual(len(client.order_calls), 1)
+        self.assertIsNone(result)
+
+    def test_short_side_retry_uses_buy(self):
+        position_info = [{"symbol": "TESTUSDT", "positionAmt": "-5.0", "entryPrice": "100.0"}]
+        client = FakeClient(fail_times=1, position_info=position_info)
+        ex = make_exchange(client)
+        ex.close_limit_position("TESTUSDT", "SHORT", 5.0, 99.5)
+        self.assertEqual(client.order_calls[1]["side"], "BUY")
+
+    def test_does_not_retry_on_other_error_codes(self):
+        client = FakeClient(fail_times=1, error=make_other_error(-1000))
+        ex = make_exchange(client)
+        with self.assertRaises(BinanceAPIException):
+            ex.close_limit_position("TESTUSDT", "LONG", 10.0, 101.23)
+        self.assertEqual(len(client.order_calls), 1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1718 @@
+[
+ {
+  "ts": 1786981456.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.93,
+  "prio": 0.81
+ },
+ {
+  "ts": 1786981458.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.91,
+  "prio": 0.65
+ },
+ {
+  "ts": 1786981500.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.93,
+  "prio": 0.81
+ },
+ {
+  "ts": 1786981500.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.91,
+  "prio": 0.65
+ },
+ {
+  "ts": 1786981540.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.98,
+  "prio": 0.89
+ },
+ {
+  "ts": 1786982778.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.88
+ },
+ {
+  "ts": 1786982833.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.88
+ },
+ {
+  "ts": 1786982913.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.74
+ },
+ {
+  "ts": 1786983032.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.88
+ },
+ {
+  "ts": 1786983227.0,
+  "symbol": "APRUSDT",
+  "prob": 1.0,
+  "prio": 0.74
+ },
+ {
+  "ts": 1786984419.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.83,
+  "prio": 0.7
+ },
+ {
+  "ts": 1786985175.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1786985216.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1786985418.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.98,
+  "prio": 0.86
+ },
+ {
+  "ts": 1786985459.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.98,
+  "prio": 0.86
+ },
+ {
+  "ts": 1786986039.0,
+  "symbol": "APRUSDT",
+  "prob": 1.0,
+  "prio": 0.69
+ },
+ {
+  "ts": 1786986082.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.99,
+  "prio": 0.89
+ },
+ {
+  "ts": 1786986123.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.99,
+  "prio": 0.89
+ },
+ {
+  "ts": 1786986280.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.95,
+  "prio": 0.74
+ },
+ {
+  "ts": 1786986576.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.8,
+  "prio": 0.68
+ },
+ {
+  "ts": 1786986859.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.92,
+  "prio": 0.82
+ },
+ {
+  "ts": 1786986901.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.92,
+  "prio": 0.82
+ },
+ {
+  "ts": 1786987292.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1786987294.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.99,
+  "prio": 0.87
+ },
+ {
+  "ts": 1786987450.0,
+  "symbol": "GPSUSDT",
+  "prob": 0.96,
+  "prio": 0.76
+ },
+ {
+  "ts": 1786987492.0,
+  "symbol": "GPSUSDT",
+  "prob": 0.96,
+  "prio": 0.76
+ },
+ {
+  "ts": 1786987870.0,
+  "symbol": "HUSDT",
+  "prob": 0.81,
+  "prio": 0.72
+ },
+ {
+  "ts": 1786987912.0,
+  "symbol": "HUSDT",
+  "prob": 0.81,
+  "prio": 0.72
+ },
+ {
+  "ts": 1786987952.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1786988790.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1786989725.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.86,
+  "prio": 0.78
+ },
+ {
+  "ts": 1786989766.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.86,
+  "prio": 0.78
+ },
+ {
+  "ts": 1786990128.0,
+  "symbol": "APRUSDT",
+  "prob": 0.91,
+  "prio": 0.67
+ },
+ {
+  "ts": 1786990456.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1786990498.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1786990870.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.92,
+  "prio": 0.8
+ },
+ {
+  "ts": 1786990913.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.92,
+  "prio": 0.8
+ },
+ {
+  "ts": 1786992066.0,
+  "symbol": "CAPUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1786992108.0,
+  "symbol": "CAPUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1786992219.0,
+  "symbol": "CAPUSDT",
+  "prob": 1.0,
+  "prio": 0.61
+ },
+ {
+  "ts": 1786993247.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.87,
+  "prio": 0.68
+ },
+ {
+  "ts": 1786993360.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.87,
+  "prio": 0.77
+ },
+ {
+  "ts": 1786993516.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.98,
+  "prio": 0.86
+ },
+ {
+  "ts": 1786993568.0,
+  "symbol": "HUSDT",
+  "prob": 1.0,
+  "prio": 0.73
+ },
+ {
+  "ts": 1786993611.0,
+  "symbol": "HUSDT",
+  "prob": 1.0,
+  "prio": 0.73
+ },
+ {
+  "ts": 1786993988.0,
+  "symbol": "HEMIUSDT",
+  "prob": 0.87,
+  "prio": 0.8
+ },
+ {
+  "ts": 1786994030.0,
+  "symbol": "HEMIUSDT",
+  "prob": 0.87,
+  "prio": 0.8
+ },
+ {
+  "ts": 1786994070.0,
+  "symbol": "FHEUSDT",
+  "prob": 0.86,
+  "prio": 0.7
+ },
+ {
+  "ts": 1786995402.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.91,
+  "prio": 0.63
+ },
+ {
+  "ts": 1786996876.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.94,
+  "prio": 0.67
+ },
+ {
+  "ts": 1786996919.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.94,
+  "prio": 0.67
+ },
+ {
+  "ts": 1786999422.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.72
+ },
+ {
+  "ts": 1786999424.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.84,
+  "prio": 0.72
+ },
+ {
+  "ts": 1786999574.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1786999616.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1786999655.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.9
+ },
+ {
+  "ts": 1787001571.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787001612.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787001652.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787007749.0,
+  "symbol": "STARUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787007790.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787008881.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.88,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787008921.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.88,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787009954.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.81,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787009995.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.81,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787010140.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787010180.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787010509.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.97,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787010549.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.97,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787011576.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.98,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787011618.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787011620.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.98,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787012436.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.91,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787013091.0,
+  "symbol": "BMTUSDT",
+  "prob": 1.0,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787013426.0,
+  "symbol": "BMTUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787013477.0,
+  "symbol": "BMTUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787013810.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.9,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787014068.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.9,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787014885.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787014887.0,
+  "symbol": "GPSUSDT",
+  "prob": 1.0,
+  "prio": 0.61
+ },
+ {
+  "ts": 1787015169.0,
+  "symbol": "STARUSDT",
+  "prob": 0.95,
+  "prio": 0.58
+ },
+ {
+  "ts": 1787015210.0,
+  "symbol": "STARUSDT",
+  "prob": 0.95,
+  "prio": 0.58
+ },
+ {
+  "ts": 1787016694.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.95,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787016736.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.93,
+  "prio": 0.88
+ },
+ {
+  "ts": 1787016780.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.93,
+  "prio": 0.88
+ },
+ {
+  "ts": 1787017454.0,
+  "symbol": "PORTALUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787017495.0,
+  "symbol": "PORTALUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787018596.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787018637.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787018964.0,
+  "symbol": "HUSDT",
+  "prob": 0.98,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787019008.0,
+  "symbol": "HUSDT",
+  "prob": 0.98,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787019705.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.95,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787020178.0,
+  "symbol": "ACUUSDT",
+  "prob": 1.0,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787020776.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.88,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787021125.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.93,
+  "prio": 0.73
+ },
+ {
+  "ts": 1787021481.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.9,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787021522.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.9,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787021593.0,
+  "symbol": "STARUSDT",
+  "prob": 0.91,
+  "prio": 0.57
+ },
+ {
+  "ts": 1787021635.0,
+  "symbol": "STARUSDT",
+  "prob": 0.91,
+  "prio": 0.57
+ },
+ {
+  "ts": 1787021709.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.98,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787021750.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.98,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787022088.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787022130.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787022510.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.97,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787022547.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.97,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787024800.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787024921.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787025036.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.91
+ },
+ {
+  "ts": 1787025154.0,
+  "symbol": "STARUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787025870.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787026096.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.98,
+  "prio": 0.91
+ },
+ {
+  "ts": 1787027749.0,
+  "symbol": "ACUUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787028091.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787028635.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787028672.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787028711.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787028972.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787029013.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787029810.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.88,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787029851.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.88,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787030469.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.83,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787030509.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.83,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787030854.0,
+  "symbol": "PIEVERSEUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787031647.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.96,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787031839.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787032294.0,
+  "symbol": "ACUUSDT",
+  "prob": 0.96,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787032549.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787032590.0,
+  "symbol": "PRLUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787032697.0,
+  "symbol": "ACUUSDT",
+  "prob": 0.98,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787032738.0,
+  "symbol": "ACUUSDT",
+  "prob": 0.98,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787032785.0,
+  "symbol": "STARUSDT",
+  "prob": 0.81,
+  "prio": 0.66
+ },
+ {
+  "ts": 1787033865.0,
+  "symbol": "XPINUSDT",
+  "prob": 0.81,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787034366.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787034407.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787034849.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.9,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787034904.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.9,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787034959.0,
+  "symbol": "EDENUSDT",
+  "prob": 0.85,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787035046.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.87,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787035089.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.87,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787036202.0,
+  "symbol": "XPINUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787036689.0,
+  "symbol": "STARUSDT",
+  "prob": 0.88,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787036835.0,
+  "symbol": "EDENUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787036876.0,
+  "symbol": "EDENUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787037453.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.89,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787037679.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787037724.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787038931.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787038974.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787040491.0,
+  "symbol": "XPINUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787040533.0,
+  "symbol": "XPINUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787040619.0,
+  "symbol": "ONGUSDT",
+  "prob": 0.97,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787040660.0,
+  "symbol": "ONGUSDT",
+  "prob": 0.97,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787040972.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787041785.0,
+  "symbol": "BEATUSDT",
+  "prob": 0.93,
+  "prio": 0.88
+ },
+ {
+  "ts": 1787042003.0,
+  "symbol": "ONUSDT",
+  "prob": 0.99,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787042715.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787042757.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787042870.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787044714.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787045407.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.77,
+  "prio": 0.61
+ },
+ {
+  "ts": 1787045480.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787045522.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787045750.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787047176.0,
+  "symbol": "ONUSDT",
+  "prob": 0.89,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787047570.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787048473.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.8,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787048517.0,
+  "symbol": "CYSUSDT",
+  "prob": 0.8,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787048751.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.88,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787049979.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787050021.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787050162.0,
+  "symbol": "ONUSDT",
+  "prob": 0.79,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787050205.0,
+  "symbol": "ONUSDT",
+  "prob": 0.79,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787050276.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.82,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787050319.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.82,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787050358.0,
+  "symbol": "CLOUSDT",
+  "prob": 0.92,
+  "prio": 0.59
+ },
+ {
+  "ts": 1787050906.0,
+  "symbol": "TUTUSDT",
+  "prob": 1.0,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787052747.0,
+  "symbol": "HEMIUSDT",
+  "prob": 0.97,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787052801.0,
+  "symbol": "HEMIUSDT",
+  "prob": 0.97,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787052802.0,
+  "symbol": "ONUSDT",
+  "prob": 0.83,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787052843.0,
+  "symbol": "ONUSDT",
+  "prob": 0.83,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787052884.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787052886.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787053119.0,
+  "symbol": "ONUSDT",
+  "prob": 0.92,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787053121.0,
+  "symbol": "AIOUSDT",
+  "prob": 0.85,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787053606.0,
+  "symbol": "CLOUSDT",
+  "prob": 0.87,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787054052.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787054096.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787054538.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787054579.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787054619.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787055032.0,
+  "symbol": "XPINUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787055071.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.96,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787055129.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.96,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787055314.0,
+  "symbol": "ONUSDT",
+  "prob": 0.99,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787055355.0,
+  "symbol": "ONUSDT",
+  "prob": 0.99,
+  "prio": 0.92
+ },
+ {
+  "ts": 1787055692.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.94
+ },
+ {
+  "ts": 1787056837.0,
+  "symbol": "APRUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787057320.0,
+  "symbol": "HEMIUSDT",
+  "prob": 1.0,
+  "prio": 0.65
+ },
+ {
+  "ts": 1787057553.0,
+  "symbol": "CLOUSDT",
+  "prob": 0.92,
+  "prio": 0.59
+ },
+ {
+  "ts": 1787058324.0,
+  "symbol": "GPSUSDT",
+  "prob": 0.9,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787058365.0,
+  "symbol": "GPSUSDT",
+  "prob": 0.9,
+  "prio": 0.85
+ },
+ {
+  "ts": 1787058746.0,
+  "symbol": "ONUSDT",
+  "prob": 0.79,
+  "prio": 0.66
+ },
+ {
+  "ts": 1787059342.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787059385.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787060257.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.8,
+  "prio": 0.67
+ },
+ {
+  "ts": 1787060478.0,
+  "symbol": "CLOUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787060519.0,
+  "symbol": "CLOUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787061810.0,
+  "symbol": "CLOUSDT",
+  "prob": 0.93,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787062471.0,
+  "symbol": "ONUSDT",
+  "prob": 0.8,
+  "prio": 0.73
+ },
+ {
+  "ts": 1787062843.0,
+  "symbol": "ONUSDT",
+  "prob": 0.96,
+  "prio": 0.89
+ },
+ {
+  "ts": 1787062932.0,
+  "symbol": "NILUSDT",
+  "prob": 0.92,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787062973.0,
+  "symbol": "NILUSDT",
+  "prob": 0.92,
+  "prio": 0.73
+ },
+ {
+  "ts": 1787063013.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787063055.0,
+  "symbol": "AKEUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787063605.0,
+  "symbol": "APRUSDT",
+  "prob": 0.92,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787063950.0,
+  "symbol": "HUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787063991.0,
+  "symbol": "HUSDT",
+  "prob": 1.0,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787065039.0,
+  "symbol": "ONUSDT",
+  "prob": 0.97,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787065081.0,
+  "symbol": "ONUSDT",
+  "prob": 0.97,
+  "prio": 0.83
+ },
+ {
+  "ts": 1787065414.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.77
+ },
+ {
+  "ts": 1787065416.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.86,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787065597.0,
+  "symbol": "TUTUSDT",
+  "prob": 0.97,
+  "prio": 0.91
+ },
+ {
+  "ts": 1787065708.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.97,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787065710.0,
+  "symbol": "STARUSDT",
+  "prob": 0.93,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787065752.0,
+  "symbol": "AKEUSDT",
+  "prob": 0.97,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787065753.0,
+  "symbol": "STARUSDT",
+  "prob": 0.96,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787065793.0,
+  "symbol": "STARUSDT",
+  "prob": 0.96,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787066174.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787066179.0,
+  "symbol": "APRUSDT",
+  "prob": 0.97,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787066222.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787066222.0,
+  "symbol": "APRUSDT",
+  "prob": 0.97,
+  "prio": 0.75
+ },
+ {
+  "ts": 1787066591.0,
+  "symbol": "ONUSDT",
+  "prob": 0.87,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787066632.0,
+  "symbol": "ONUSDT",
+  "prob": 0.87,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787067367.0,
+  "symbol": "BMTUSDT",
+  "prob": 0.86,
+  "prio": 0.58
+ },
+ {
+  "ts": 1787067409.0,
+  "symbol": "BMTUSDT",
+  "prob": 0.86,
+  "prio": 0.58
+ },
+ {
+  "ts": 1787067446.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787067488.0,
+  "symbol": "OPNUSDT",
+  "prob": 1.0,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787067911.0,
+  "symbol": "STARUSDT",
+  "prob": 0.92,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787067916.0,
+  "symbol": "HUSDT",
+  "prob": 0.81,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787067958.0,
+  "symbol": "STARUSDT",
+  "prob": 0.92,
+  "prio": 0.87
+ },
+ {
+  "ts": 1787067963.0,
+  "symbol": "HUSDT",
+  "prob": 0.81,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787069384.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.96,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787069649.0,
+  "symbol": "ONUSDT",
+  "prob": 0.98,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787069690.0,
+  "symbol": "ONUSDT",
+  "prob": 0.98,
+  "prio": 0.69
+ },
+ {
+  "ts": 1787070271.0,
+  "symbol": "AIOUSDT",
+  "prob": 1.0,
+  "prio": 0.78
+ },
+ {
+  "ts": 1787070390.0,
+  "symbol": "ONUSDT",
+  "prob": 0.9,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787070686.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.98,
+  "prio": 0.63
+ },
+ {
+  "ts": 1787070728.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.98,
+  "prio": 0.63
+ },
+ {
+  "ts": 1787070876.0,
+  "symbol": "APRUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787072079.0,
+  "symbol": "ONUSDT",
+  "prob": 0.91,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787072081.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.88,
+  "prio": 0.59
+ },
+ {
+  "ts": 1787073529.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787074154.0,
+  "symbol": "CYSUSDT",
+  "prob": 1.0,
+  "prio": 0.81
+ },
+ {
+  "ts": 1787074460.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787074502.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787076997.0,
+  "symbol": "ALPINEUSDT",
+  "prob": 1.0,
+  "prio": 0.7
+ },
+ {
+  "ts": 1787078181.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787078223.0,
+  "symbol": "BEATUSDT",
+  "prob": 1.0,
+  "prio": 0.72
+ },
+ {
+  "ts": 1787079947.0,
+  "symbol": "STARUSDT",
+  "prob": 0.92,
+  "prio": 0.71
+ },
+ {
+  "ts": 1787080065.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.9,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787082092.0,
+  "symbol": "ACEUSDT",
+  "prob": 0.92,
+  "prio": 0.64
+ },
+ {
+  "ts": 1787083294.0,
+  "symbol": "VELVETUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787085453.0,
+  "symbol": "VELVETUSDT",
+  "prob": 0.87,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787085753.0,
+  "symbol": "1000RATSUSDT",
+  "prob": 1.0,
+  "prio": 0.8
+ },
+ {
+  "ts": 1787086051.0,
+  "symbol": "1000RATSUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787086092.0,
+  "symbol": "1000RATSUSDT",
+  "prob": 1.0,
+  "prio": 0.79
+ },
+ {
+  "ts": 1787089525.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787089565.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787089605.0,
+  "symbol": "ONUSDT",
+  "prob": 1.0,
+  "prio": 0.84
+ },
+ {
+  "ts": 1787090075.0,
+  "symbol": "1000RATSUSDT",
+  "prob": 0.81,
+  "prio": 0.74
+ },
+ {
+  "ts": 1787090662.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.95,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787090704.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.95,
+  "prio": 0.82
+ },
+ {
+  "ts": 1787091943.0,
+  "symbol": "ONUSDT",
+  "prob": 0.96,
+  "prio": 0.73
+ },
+ {
+  "ts": 1787092152.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.93,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787092193.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.93,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787095820.0,
+  "symbol": "SKYAIUSDT",
+  "prob": 1.0,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787095861.0,
+  "symbol": "SKYAIUSDT",
+  "prob": 1.0,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787099114.0,
+  "symbol": "ONUSDT",
+  "prob": 0.96,
+  "prio": 0.68
+ },
+ {
+  "ts": 1787099156.0,
+  "symbol": "ONUSDT",
+  "prob": 0.93,
+  "prio": 0.66
+ },
+ {
+  "ts": 1787101455.0,
+  "symbol": "ONUSDT",
+  "prob": 0.99,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787101498.0,
+  "symbol": "ONUSDT",
+  "prob": 0.99,
+  "prio": 0.86
+ },
+ {
+  "ts": 1787101897.0,
+  "symbol": "ALPINEUSDT",
+  "prob": 0.86,
+  "prio": 0.7
+ },
+ {
+  "ts": 1787102120.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.84,
+  "prio": 0.66
+ },
+ {
+  "ts": 1787102161.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.84,
+  "prio": 0.66
+ },
+ {
+  "ts": 1787102288.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.86,
+  "prio": 0.76
+ },
+ {
+  "ts": 1787102328.0,
+  "symbol": "JCTUSDT",
+  "prob": 0.86,
+  "prio": 0.76
+ }
+]

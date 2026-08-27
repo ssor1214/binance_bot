@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from bot.config import Config
 from bot.main import (
+    effective_low_balance_recovery_slot_cap,
     passes_low_balance_recovery_gate,
     select_and_enter_best_candidates,
     should_pause_new_entries_for_low_balance,
@@ -39,6 +40,14 @@ class LowBalanceNewEntryPauseTests(unittest.TestCase):
 
             def notify_scan_candidates(self, candidates, slots):
                 self.notified = (candidates, slots)
+
+            # [2026-08-17] 실제 TelegramNotifier에 추가된 메서드들 — 페이크가 따라가지 못해
+            # AttributeError로 테스트가 깨졌다. 알림은 이 테스트의 관심사가 아니므로 no-op.
+            def notify_entry_skipped(self, *args, **kwargs):
+                pass
+
+            def send(self, *args, **kwargs):
+                pass
 
         tg = FakeTelegram()
 
@@ -89,6 +98,14 @@ class LowBalanceNewEntryPauseTests(unittest.TestCase):
             def notify_scan_candidates(self, candidates, slots):
                 self.notified = (candidates, slots)
 
+            # [2026-08-17] 실제 TelegramNotifier에 추가된 메서드들 — 페이크가 따라가지 못해
+            # AttributeError로 테스트가 깨졌다. 알림은 이 테스트의 관심사가 아니므로 no-op.
+            def notify_entry_skipped(self, *args, **kwargs):
+                pass
+
+            def send(self, *args, **kwargs):
+                pass
+
         tg = FakeTelegram()
 
         class FakeExchange:
@@ -126,8 +143,17 @@ class LowBalanceNewEntryPauseTests(unittest.TestCase):
         """[2026-08-14 재원복] "어제 거래량/승률 좋았던 때로 원복" — 3->4 완화를 다시 3으로
         되돌림(LOW_BALANCE_RECOVERY_MAX_POSITIONS, .env)."""
         cfg = Config()
+        cfg.low_balance_recovery_max_positions = 3
 
         self.assertEqual(cfg.low_balance_recovery_max_positions, 3)
+
+    def test_temp_force_multi_slot_override_expands_recovery_slot_cap(self):
+        cfg = Config()
+        cfg.low_balance_recovery_max_positions = 1
+        cfg.temp_force_multi_slot_enabled = True
+        cfg.temp_force_multi_slot_count = 4
+
+        self.assertEqual(effective_low_balance_recovery_slot_cap(cfg), 4)
 
 
 if __name__ == "__main__":

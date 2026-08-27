@@ -13,11 +13,18 @@ def cfg() -> Config:
     c = Config()
     c.force_profit_exit_max_hold_min = 5.0
     c.force_profit_exit_min_roe = 1.5
+    c.force_profit_trend_exception_enabled = True
+    c.force_profit_trend_exception_extend_min = 6.0
+    c.force_profit_trend_exception_min_roe = 2.5
     c.take_profit_min = 3.0  # 정상 트레일링 시작선(비교용으로 더 높게 둠)
     c.stop_loss_pct = 6.0
     c.take_profit_hard_cap = 20.0
     c.small_profit_lock_balance_threshold = 0  # 이 테스트에서 다른 분기 배제
     c.small_profit_balance_threshold = 0
+    c.stagnation_time_stop_enabled = True
+    c.stagnation_time_stop_min_hold_min = 15.0
+    c.stagnation_time_stop_min_roe = -1.5
+    c.stagnation_time_stop_max_roe = 1.0
     return c
 
 
@@ -80,6 +87,36 @@ class ForceProfitExitTests(unittest.TestCase):
         with patch("bot.position_manager.time.time", return_value=pos.entered_at + 10 * 60):  # 10분 경과
             decision = pm.evaluate("DOGEUSDT", mark_price=102.0)  # ROE 8% (익절기준3% 넘음 -> 정상 트레일링만 armed)
         self.assertIsNone(decision)  # armed만 되고 아직 트레일링 확정은 아님(고점=현재라 하락폭0), 새 규칙은 꺼져있어 무관
+
+    def test_strong_trend_exception_extends_force_exit_once(self):
+        pm = self.make_manager()
+        pm.track("SPKUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0)
+        pos = pm.positions["SPKUSDT"]
+        with patch("bot.position_manager.time.time", return_value=pos.entered_at + 6 * 60):
+            decision = pm.evaluate("SPKUSDT", mark_price=100.7, momentum_continuing=True, swing_continuing=True)
+        self.assertIsNone(decision)
+        self.assertTrue(pos.force_profit_extension_used)
+
+        with patch("bot.position_manager.time.time", return_value=pos.entered_at + 12 * 60):
+            decision2 = pm.evaluate("SPKUSDT", mark_price=100.7, momentum_continuing=False, swing_continuing=False)
+        self.assertEqual(decision2, "TAKE_PROFIT")
+
+    def test_trend_exception_does_not_apply_without_swing(self):
+        pm = self.make_manager()
+        pm.track("SPKUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0)
+        pos = pm.positions["SPKUSDT"]
+        with patch("bot.position_manager.time.time", return_value=pos.entered_at + 6 * 60):
+            decision = pm.evaluate("SPKUSDT", mark_price=100.7, momentum_continuing=True, swing_continuing=False)
+        self.assertIsNone(decision)
+        self.assertFalse(pos.force_profit_extension_used)
+
+    def test_stagnation_time_stop_cuts_unarmed_flat_position_conservatively(self):
+        pm = self.make_manager()
+        pm.track("BOMEUSDT", "LONG", entry_price=100.0, quantity=1.0, leverage=4.0)
+        pos = pm.positions["BOMEUSDT"]
+        with patch("bot.position_manager.time.time", return_value=pos.entered_at + 16 * 60):
+            decision = pm.evaluate("BOMEUSDT", mark_price=100.1)
+        self.assertEqual(decision, "TIME_STOP")
 
 
 if __name__ == "__main__":

@@ -110,6 +110,5 @@ class WidenExchangeTrailingForSwingTests(unittest.TestCase):
         self.assertEqual(pos.trailing_order_id, 111)
         self.assertFalse(pos.exchange_trailing_widened)
 
-
 if __name__ == "__main__":
     unittest.main()

@@ -16,12 +16,74 @@ import datetime
 import subprocess
 import sys
 import time
+import os
 from pathlib import Path
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "supervisor.log"
 HEARTBEAT_PATH = LOG_DIR / "heartbeat.txt"  # bot/main.py의 HEARTBEAT_PATH와 반드시 동일해야 함
+SUPERVISOR_LOCK_PATH = LOG_DIR.parent / ".run_forever.lock"
+_SUPERVISOR_MUTEX = None
+
+
+def has_same_supervisor_parent() -> bool:
+    """Reject a second wrapper when an identical wrapper already owns this process.
+
+    [2026-08-25 버그수정] 원래는 부모의 CommandLine에 "run_forever.py"와 "binance-futures-bot"이
+    들어 있으면 무조건 중첩으로 판정했다. 그런데 사람이 수동으로 띄울 때 쓰는 런처(PowerShell
+    Start-Process, bash `cd <repo> && python run_forever.py` 등)의 명령줄에도 그 두 문자열이
+    그대로 들어간다. 그래서 **정상적인 수동 기동이 전부 "중첩 감시기"로 오판돼 즉시 종료**됐다
+    (실측: 17:04~17:06 세 번의 기동 시도가 모두 이 경로로 죽었고, 봇이 supervisor 없이
+    맨몸 bot.main으로만 돌던 원인이기도 하다).
+    진짜 중첩은 multiprocessing spawn이 run_forever.py를 재실행하는 경우이고, 그때 부모는
+    반드시 python 프로세스다. 그래서 부모의 실행 파일명이 python인지까지 확인한다.
+    """
+    try:
+        import subprocess
+        # [2026-08-25 버그수정 2] os.getppid()를 쓰면 안 된다. Git Bash/MSYS에서 실행하면
+        # 윈도우 PID가 아니라 MSYS PID를 돌려주고, 그 값이 이미 재사용된 다른 프로세스와
+        # 겹치면 엉뚱한 프로세스를 "내 부모"로 오인한다(실측: getppid()=7428이 이미 죽고
+        # 재사용된 PID였고, 그 자리에 있던 python.exe 때문에 중첩으로 오판됐다).
+        # 자기 PID(os.getpid())는 항상 정확하므로, WMI로 자기 레코드를 먼저 찾고 거기서
+        # ParentProcessId를 읽는다.
+        own_pid = os.getpid()
+        out = subprocess.check_output(
+            [
+                "powershell", "-NoProfile", "-Command",
+                f"$me=Get-CimInstance Win32_Process -Filter 'ProcessId={own_pid}';"
+                "if($me){$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($me.ParentProcessId)\";"
+                "if($p){ $p.Name + '|' + $p.CommandLine }}",
+            ],
+            text=True, stderr=subprocess.DEVNULL, timeout=8,
+        )
+        name, _, cmdline = out.strip().partition("|")
+        if not name.lower().startswith("python"):
+            return False  # 셸/런처가 부모면 중첩이 아니라 정상적인 수동 기동이다
+        return "run_forever.py" in cmdline and "binance-futures-bot" in cmdline
+    except Exception:
+        return False
+
+
+# [2026-08-25] 커널 뮤텍스 이름을 상수로 뺀다. 테스트가 전역 이름을 그대로 쓰면
+# "라이브 봇이 돌고 있을 때만 실패하는" 테스트가 되어버린다(실제로 그렇게 깨졌다).
+SUPERVISOR_MUTEX_NAME = r"Global\BinanceFuturesBotSupervisor"
+
+
+def acquire_named_mutex(name: str) -> bool:
+    """Use a kernel mutex because msvcrt file locks are unreliable across launches."""
+    global _SUPERVISOR_MUTEX
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        return False
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+    _SUPERVISOR_MUTEX = handle
+    return True
 
 # [2026-08-12 사용자요청] "RAM 문제 등으로 멈추면 새로 시작 + RAM 수급까지 자동으로" —
 # 이 PC는 4GB RAM 중 여유분이 0.1~0.6GB까지 떨어지는 일이 실측됐고(사용자가 직접 확인),
@@ -32,10 +94,11 @@ HEARTBEAT_PATH = LOG_DIR / "heartbeat.txt"  # bot/main.py의 HEARTBEAT_PATH와 �
 LOW_RAM_MB_THRESHOLD = 500
 RAM_CHECK_INTERVAL_SEC = 60
 # [매우 중요] 여기 나열된 것만 자동 종료한다 — 실거래/모니터링 관련 프로세스(bot.main,
-# ws_worker, dashboard/server.py 등)는 절대 포함시키면 안 된다. ChatGPT.exe는 사용자가
-# 이 세션 중 두 차례 직접 승인해 종료한 전례가 있는, 매매와 무관한 비필수 앱이라 자동
-# 종료 후보로 확정했다. 새 항목을 추가할 땐 반드시 매매/모니터링과 무관함을 먼저 확인할 것.
-KNOWN_SAFE_TO_CLOSE = ["ChatGPT.exe"]
+# ws_worker, dashboard/server.py 등)는 절대 포함시키면 안 된다.
+# [2026-08-16 수정] Codex/ChatGPT 데스크톱 앱이 실제 작업 채널이므로 자동 종료 대상에서
+# 완전히 제외한다. 메모리 확보가 필요하더라도 사용자의 작업 앱을 죽이면 운영/대응 자체가
+# 끊겨 버리므로, 기본값은 "자동 종료 대상 없음"으로 둔다.
+KNOWN_SAFE_TO_CLOSE: list[str] = []
 
 
 class _MemoryStatusEx(ctypes.Structure):
@@ -70,6 +133,12 @@ def free_ram_if_low() -> None:
     종료를 시도한다. 실거래/대시보드 프로세스는 이 목록에 없으므로 절대 건드리지 않는다."""
     avail = get_available_ram_mb()
     if avail is None or avail >= LOW_RAM_MB_THRESHOLD:
+        return
+    if not KNOWN_SAFE_TO_CLOSE:
+        log(
+            f"가용 RAM {avail:.0f}MB로 부족(기준 {LOW_RAM_MB_THRESHOLD}MB) — "
+            "자동 종료 대상이 비어 있어 어떤 앱도 강제 종료하지 않습니다."
+        )
         return
     log(f"가용 RAM {avail:.0f}MB로 부족(기준 {LOW_RAM_MB_THRESHOLD}MB) — 비필수 프로세스 정리 시도: {KNOWN_SAFE_TO_CLOSE}")
     for name in KNOWN_SAFE_TO_CLOSE:
@@ -123,6 +192,27 @@ def log(message: str):
         f.write(line + "\n")
 
 
+def acquire_supervisor_lock():
+    """중복 run_forever 인스턴스를 막는다.
+
+    bot.main 락만으로는 실주문 중복은 막을 수 있어도, 중복 supervisor가 계속 bot.main을
+    재기동 경쟁하면서 ws_worker 고아/로그 오염/재시작 경합을 만들 수 있다."""
+    if not acquire_named_mutex(SUPERVISOR_MUTEX_NAME):
+        log("이미 다른 run_forever 인스턴스가 실행 중입니다. named mutex로 중복 감시기를 차단합니다.")
+        raise SystemExit(DUPLICATE_INSTANCE_EXIT_CODE)
+
+    import msvcrt
+
+    lock_file = open(SUPERVISOR_LOCK_PATH, "w")
+    try:
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        lock_file.close()
+        log("이미 다른 run_forever 인스턴스가 실행 중입니다. 중복 감시기를 방지하기 위해 종료합니다.")
+        raise SystemExit(DUPLICATE_INSTANCE_EXIT_CODE)
+    return lock_file
+
+
 def heartbeat_timestamp() -> float | None:
     """하트비트 파일에 기록된 epoch 시각을 반환한다."""
     try:
@@ -131,14 +221,31 @@ def heartbeat_timestamp() -> float | None:
         return None
 
 
-def heartbeat_age_sec(*, process_started_at: float | None = None, now: float | None = None) -> float | None:
+def heartbeat_age_sec(
+    *, process_started_at: float | None = None, now: float | None = None, last_known_at: float | None = None
+) -> float | None:
     """하트비트 파일의 "마지막 기록 시각으로부터 지금까지 경과 시간"을 반환한다.
     새 bot.main을 감시할 때는 이전 프로세스가 남긴 오래된 하트비트 때문에 새 프로세스를
-    즉시 죽이지 않도록 프로세스 시작 시각을 최소 기준으로 사용한다."""
+    즉시 죽이지 않도록 프로세스 시작 시각을 최소 기준으로 사용한다.
+
+    [2026-08-15 실측 오탐 원인 확정] 325분 정상 운행 후 "heartbeat_age=19514초(=프로세스
+    가동시간과 정확히 일치)"로 오탐 발생 — 진단로그의 heartbeat_raw는 거의 동시각(now와
+    0.05초 차이)이었다. 즉 실제로는 멈추지 않았고, HEARTBEAT_PATH.write_text()가 파일을
+    truncate 후 쓰는 게 원자적이지 않아, 감시 루프가 하필 그 찰나에 읽어서 빈 문자열/파싱
+    실패(heartbeat_timestamp()가 None 반환)를 만난 것. 기존 코드는 heartbeat_at이 None이면
+    process_started_at까지 확 되돌아가버려서(0분 전 상태 취급), 5시간 넘게 잘 돌던 프로세스도
+    "방금 시작한 것"처럼 나이가 계산돼 결과적으로 그 순간의 실제 now와의 차이가 고스란히
+    "정지시간"으로 둔갑했다. last_known_at(호출자가 마지막으로 성공적으로 읽은 하트비트 값을
+    계속 들고 있다가 넘겨줌)을 process_started_at보다 우선시켜, 이런 일시적 읽기 실패 한 번으로
+    오탐이 나지 않게 한다 — 진짜로 하트비트가 멈췄다면 last_known_at도 결국 똑같이 오래된 값이라
+    정상적으로 감지된다."""
     heartbeat_at = heartbeat_timestamp()
-    if heartbeat_at is None and process_started_at is None:
+    freshest_at = max(
+        (ts for ts in (heartbeat_at, last_known_at, process_started_at) if ts is not None),
+        default=None,
+    )
+    if freshest_at is None:
         return None
-    freshest_at = max(ts for ts in (heartbeat_at, process_started_at) if ts is not None)
     return max(0.0, (time.time() if now is None else now) - freshest_at)
 
 
@@ -151,6 +258,7 @@ def run_and_watch() -> int:
     process_started_at = time.time()
     process = subprocess.Popen([sys.executable, "-m", "bot.main"])
     last_ram_check_at = 0.0
+    last_known_heartbeat_at = None  # [2026-08-15] 마지막으로 성공적으로 읽힌 하트비트값 — 아래 참고
     while True:
         returncode = process.poll()
         if returncode is not None:
@@ -160,7 +268,16 @@ def run_and_watch() -> int:
             last_ram_check_at = time.time()
             free_ram_if_low()
 
-        age = heartbeat_age_sec(process_started_at=process_started_at)
+        # [2026-08-15] heartbeat.txt write_text()가 원자적이지 않아 감시 루프가 쓰기 도중
+        # 읽으면 일시적으로 파싱 실패(None)할 수 있다 — 그 순간 process_started_at까지
+        # 되돌아가 몇 시간짜리 오탐 강제종료를 낸 사고가 실측됨. 마지막으로 성공한 값을
+        # 계속 들고 있다가 heartbeat_age_sec에 최소 기준으로 넘겨 이런 찰나의 읽기 실패를
+        # 흡수한다(진짜 정지라면 이 값도 결국 똑같이 오래돼서 정상 감지됨).
+        raw_heartbeat_at = heartbeat_timestamp()
+        if raw_heartbeat_at is not None:
+            last_known_heartbeat_at = raw_heartbeat_at
+
+        age = heartbeat_age_sec(process_started_at=process_started_at, last_known_at=last_known_heartbeat_at)
         # [2026-08-13] 사용자가 자는 동안 이 판정이 여러 차례(47분/51분/230분 실행 후) 오탐으로
         # 확인됨 — bot.log엔 킬 직전까지 30~40초 간격으로 정상 스캔 로그가 계속 찍혀있어 실제로
         # 멈춘 게 아니었다. 정확한 원인(heartbeat.txt 읽기 실패? 다른 값?)을 다음 발생 시 바로
@@ -197,6 +314,19 @@ def compute_fast_crash_backoff_sec(streak: int) -> int:
 
 
 def main():
+    # [2026-08-25 장애수정] 중복 감시기 차단은 named mutex(acquire_supervisor_lock 안)만으로
+    # 판정한다. 부모 프로세스 검사는 보조 신호로만 남긴다.
+    # 이유: 이 검사가 오탐으로 정상 기동을 계속 죽였다(17:04~17:12 사이 6번 연속 기동 실패,
+    #       그 시간 동안 봇이 완전히 내려가 있었다). 원인은 두 겹이었다 —
+    #       (1) 사람이 쓰는 런처(PowerShell Start-Process / bash `cd <repo> && python ...`)의
+    #           명령줄에도 "run_forever.py"와 "binance-futures-bot"이 그대로 들어간다.
+    #       (2) Git Bash/MSYS에서는 os.getppid()가 윈도우 PID가 아니라 MSYS PID를 돌려주고,
+    #           그 값이 재사용된 PID와 겹치면 엉뚱한 프로세스를 부모로 오인한다.
+    #       커널 mutex는 이런 오탐이 구조적으로 없고 이미 중복을 정확히 막고 있으므로,
+    #       "봇이 안 뜨는" 실패 모드를 만드는 이 검사에 기동 권한을 주지 않는다.
+    if has_same_supervisor_parent():
+        log("경고: 부모가 동일 저장소 run_forever로 보입니다. 중복 여부는 named mutex로 판정합니다.")
+    _lock = acquire_supervisor_lock()
     log("=== 감시 스크립트 시작 ===")
     fast_crash_streak = 0  # 연속으로 짧게 살고 죽은 횟수(지수 백오프 계산용)
     try:

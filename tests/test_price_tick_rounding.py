@@ -28,6 +28,15 @@ class PriceTickRoundingTests(unittest.TestCase):
 
         self.assertEqual(ex.round_price("TESTUSDT", 1.23456), 1.2346)
 
+    def test_format_price_avoids_scientific_notation(self):
+        ex = Exchange.__new__(Exchange)
+        ex.get_symbol_filters = lambda symbol: {
+            "price_precision": 8,
+            "tick_size": 0.00000001,
+        }
+
+        self.assertEqual(ex.format_price("NEIROUSDT", 0.000083), "0.00008300")
+
 
 if __name__ == "__main__":
     unittest.main()

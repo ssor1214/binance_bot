@@ -1,0 +1,104 @@
+{
+ "created_at": 1787105392.8498366,
+ "created_at_kst": "2026-08-19 11:09:52",
+ "change": {
+  "key": "MTF_ZERO_AGREE_EXCEPTION_PRIORITY_MIN",
+  "before": 0.88,
+  "after": 0.85
+ },
+ "revert_command": "MTF_ZERO_AGREE_EXCEPTION_PRIORITY_MIN=0.88 로 되돌리고 봇 재시작",
+ "baseline": {
+  "last_6h": {
+   "n": 32,
+   "win_rate": 50.0,
+   "pnl": -1.4086,
+   "per_trade": -0.04402,
+   "profit_factor": 0.33
+  },
+  "last_12h": {
+   "n": 100,
+   "win_rate": 65.0,
+   "pnl": -1.1594,
+   "per_trade": -0.01159,
+   "profit_factor": 0.3942
+  },
+  "last_24h": {
+   "n": 233,
+   "win_rate": 66.95,
+   "pnl": -0.7016,
+   "per_trade": -0.00301,
+   "profit_factor": 0.4554
+  },
+  "since_block_rule_20260818_1254": {
+   "n": 214,
+   "win_rate": 66.82,
+   "pnl": -0.7903,
+   "per_trade": -0.00369,
+   "profit_factor": 0.4497
+  },
+  "since_lev4_return_20260819_0905": {
+   "n": 12,
+   "win_rate": 58.33,
+   "pnl": -0.4364,
+   "per_trade": -0.03637,
+   "profit_factor": 0.2414
+  }
+ },
+ "entry_rate_per_hour": {
+  "last_6h": 5.333,
+  "last_12h": 8.333,
+  "last_24h": 9.708
+ },
+ "mtf_exception_entries_before": 34,
+ "mtf_exception_perf_before": {
+  "n": 34,
+  "win_rate": 70.6,
+  "per_trade": -0.0004,
+  "note": "같은 기간 일반 진입 65.9%/-0.0100 대비 우위"
+ },
+ "priority_band_curve_at_decision": {
+  "0.00-0.75": {
+   "n": 80,
+   "win_rate": 68.8,
+   "per_trade": -0.0053
+  },
+  "0.75-0.80": {
+   "n": 56,
+   "win_rate": 60.7,
+   "per_trade": -0.0152
+  },
+  "0.80-0.85": {
+   "n": 54,
+   "win_rate": 75.9,
+   "per_trade": 0.0089
+  },
+  "0.85-0.88": {
+   "n": 34,
+   "win_rate": 73.5,
+   "per_trade": 0.0082
+  },
+  "0.88-0.92": {
+   "n": 43,
+   "win_rate": 60.5,
+   "per_trade": -0.019
+  },
+  "0.92+": {
+   "n": 34,
+   "win_rate": 61.8,
+   "per_trade": 0.0019
+  },
+  "note": "단조 아님. prio>=0.88 이 오히려 최악. 상관 r=-0.031(무상관). 매칭률 17%(301/1790) 편향 있음"
+ },
+ "expected_effect": {
+  "extra_entries_per_hour": 0.83,
+  "expected_win_rate": 70.0,
+  "expected_per_trade": 0.0034,
+  "basis": "로그 리플레이 286건(08-18 00:44~08-19 10:18, 33.6h) 상한값. chase_entry/btc_opposes 게이트 미반영"
+ },
+ "judgment_criteria": {
+  "min_sample": 30,
+  "win_rate_min": 65.0,
+  "entry_rate_must_not_drop": true,
+  "action_if_fail": "MTF_ZERO_AGREE_EXCEPTION_PRIORITY_MIN=0.88 원복"
+ }
+}

@@ -66,7 +66,47 @@ class TradeRecord:
     commission_asset: str | None = None
     funding_fee_usdt: float | None = None
     slippage_pct: float | None = None  # (실제 체결가 - 의도한 가격) / 의도한 가격
+    external_close_context: str | None = None
     recorded_at: float = field(default_factory=time.time)
+    # [2026-08-16 observability] EXTERNAL_CLOSE_*는 거래소에서 이미 닫힌 뒤 사후 분류된 이름이라
+    # 그 자체만으론 원인을 알 수 없다. 당시 보호주문 상태와 유예 상태를 같이 남겨두면 다음
+    # 복기에서 STOP_MARKET 체결, 유예 중 청산, 수동개입 가능성 등을 훨씬 빨리 좁힐 수 있다.
+    protection_state: str | None = None
+    stop_loss_widened: bool = False
+    applied_stop_loss_pct: float = 0.0
+    sl_defer_used: bool = False
+    sl_defer_active: bool = False
+    # [2026-08-15 사용자요청] "V2 이후 실제로 스파이크 조기체결이 적용된 거래가 어느 건지
+    # 알 수가 없다"는 관찰성 문제 발견 후 추가 — candidate/TrackedPosition에서 그대로 이어받음.
+    early_entry_spike: bool = False
+    # [2026-08-25 관측] 진입 근거 — 원칙 2 판정용(순수 EMA 진입 vs 볼밴 관여 진입 비교).
+    entry_score: float | None = None
+    entry_bb_event: bool | None = None
+    entry_width_expanding: bool | None = None
+    entry_rsi: float | None = None
+    entry_rsi_aligned: bool | None = None
+    scale_in_done: bool | None = None
+    scale_in_trigger_roe: float | None = None
+    # [2026-08-17 손익비 복기용] 트레일링 무장 계측. TrackedPosition의 동명 필드를 그대로 옮긴다.
+    # 지금까지는 무장 여부를 bot.log의 "트레일링 시작" 로그로 역산할 수밖에 없었는데,
+    # 로그 로테이션이 되면 과거 거래는 영구히 판정 불가가 된다. 원장에 직접 남긴다.
+    #   armed_at=0  -> 끝까지 무장 못 한 거래
+    #   max_favorable_roe - (실현 ROE) = 반납폭
+    #   max_favorable_roe가 take_profit_min을 넘겼는데 armed_at=0 이면
+    #     "가격은 왔는데 봇이 못 잡았다"(거래소가 먼저 닫았거나 폴링이 늦었다)는 뜻이다.
+    armed_at: float | None = None
+    armed_roe: float | None = None
+    max_favorable_roe: float | None = None
+    max_adverse_roe: float | None = None
+    evaluate_calls: int | None = None
+    # [2026-08-18 진입품질 규명용] 진입 후 30초/60초 시점 ROE 스냅샷.
+    # 고점 ROE < 1.5%인 거래 34%가 손실 전부를 만드는데 진입 시점 피처로는 구분이 안 된다.
+    # 진입 직후 짧은 구간으로 판별 가능한지 재기 위한 관측값이며 청산 판단에 쓰지 않는다.
+    # [2026-08-19] 120초 추가 — 보유 2~5분 구간이 명목당 net -0.3818%로 가장 나쁜데
+    # 그 시작점이다. 무장 미달 거래만 자르는 조건부 컷(S2) 검증용이며 청산 판단에 쓰지 않는다.
+    roe_at_30s: float | None = None
+    roe_at_60s: float | None = None
+    roe_at_120s: float | None = None
 
 
 def strategy_config_snapshot(cfg) -> dict:
