@@ -287,6 +287,7 @@ def main():
                    help="N봉마다 한 번만 표본추출 — 보유구간 겹침 제거용")
     p.add_argument("--detail", default="", help="이름에 이 문자열이 든 신호를 롱/숏·심볼별로 분해")
     p.add_argument("--split", type=int, default=0, help="표본을 N등분해 국면별로 재측정")
+    p.add_argument("--funding", default="", help="펀딩비 npz (edge_funding.py 산출물)")
     a = p.parse_args()
     hor = [int(x) for x in a.horizons.split(",")]
 
@@ -303,6 +304,41 @@ def main():
     for h in hor:
         with np.errstate(invalid="ignore"):
             FN[h] = F[h] - np.nanmean(F[h], axis=1, keepdims=True)
+
+    FD = {}
+    if a.funding:
+        # 보유구간에 걸린 펀딩 정산액을 뺀다.
+        # 부호 규약: rate > 0 이면 롱이 지불한다. 신호 방향 부호(sgn)를 곱하는 것은
+        # stats() 이므로, 여기서는 "롱 기준 비용"인 rate 합을 그대로 만들어 두고
+        # 가격수익률에서 빼기만 하면 롱/숏 양쪽이 자동으로 맞는다.
+        #   롱 순익  = +(ret - fund),  숏 순익 = -(ret - fund) = -ret + fund
+        fz = np.load(ROOT / a.funding, allow_pickle=True)
+        bar_ms = bar_min * 60_000
+        cum = np.zeros((T + 1, S))
+        for j, s in enumerate(P["syms"]):
+            key = f"{s}|funding"
+            if key not in fz:
+                cum[:, j] = np.nan
+                continue
+            fr = fz[key]
+            # 각 봉 시각까지의 누적 펀딩률. 마지막 행은 마지막 봉의 '마감' 시각용.
+            edges = np.concatenate([P["t"], [P["t"][-1] + bar_ms]])
+            pos = np.searchsorted(fr[:, 0], edges, side="right")
+            cum[:, j] = np.concatenate([[0.0], np.cumsum(fr[:, 1])])[pos]
+        miss = int(np.isnan(cum[0]).sum())
+        for h in hor:
+            f = np.full((T, S), np.nan)
+            # 진입 = 봉 i+1 시가(t[i+1]), 청산 = 봉 i+1+h 마감(t[i+1+h] + bar_ms)
+            lo = cum[1:T - h]                 # t[i+1]        (i = 0..T-h-2)
+            hi = cum[2 + h:T + 1]             # t[i+1+h]+bar  (같은 i 범위)
+            f[:T - 1 - h] = (hi - lo) * 100.0
+            FD[h] = f
+        avg = {h: np.nanmean(FD[h]) for h in hor}
+        print("펀딩비 적용: " + " / ".join(
+            f"{h * bar_min / 60:g}시간 보유 평균 {avg[h]:+.4f}%(롱 기준 비용)" for h in hor))
+        if miss:
+            print(f"  주의: 펀딩 이력이 없는 심볼 {miss}개는 이 표에서 제외된다.")
+        print()
 
     if a.stride > 1:
         # 겹치는 보유구간은 서로 독립이 아니다. h봉 보유를 h봉 간격으로만 표본추출하면
@@ -342,6 +378,10 @@ def main():
     if a.raw:
         table("원시 (드리프트 포함)", F)
     table("드리프트 중립", FN)
+    if FD:
+        FNF = {h: FN[h] - FD[h] for h in hor}
+        table("드리프트 중립 + 펀딩비 차감", FNF)
+        FN = FNF   # 이후 detail/split 도 펀딩 반영분으로 본다
 
     if a.detail:
         # 롱/숏 분해 + 심볼 집중도. 드리프트 중립화가 롱 편향을 제대로 걷어냈는지,
