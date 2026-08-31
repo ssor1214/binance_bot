@@ -361,7 +361,7 @@ def signals(P, I, FRM=None, M=None):
         xq(doi, "OI 증가율 상위 롱", lo_long=False)
 
     # --- 횡단면 계열: 같은 시각 다른 심볼 대비 상대강도 ----------------------
-    for lb in (5, 20):
+    for lb in (5, 10, 20, 40, 80):
         r = np.full(C.shape, np.nan)
         r[lb:] = C[lb:] / C[:-lb] - 1.0
         med = np.nanmedian(r, axis=1, keepdims=True)
@@ -426,6 +426,8 @@ def main():
     p.add_argument("--end-date", default="", help="YYYY-MM-DD 이후 봉은 버린다")
     p.add_argument("--start-date", default="", help="YYYY-MM-DD 이전 봉은 버린다")
     p.add_argument("--drop-symbols", default="", help="제외할 심볼(쉼표 구분)")
+    p.add_argument("--keep-symbols", default="",
+                   help="이 심볼만 남긴다(쉼표 구분). 시장평균 기준선은 전체로 유지")
     p.add_argument("--interval", default="3m")
     p.add_argument("--horizons", default="5,20,40,80")
     p.add_argument("--raw", action="store_true", help="드리프트 중립화 전 값도 함께 출력")
@@ -440,6 +442,16 @@ def main():
 
     caches = [a.cache] + [x for x in a.extra_cache.split(",") if x]
     P = load_panel(caches, a.interval, a.end_date, a.start_date)
+    if a.keep_symbols:
+        # 신호는 이 심볼들에서만 발생시키되, **드리프트 중립화의 시장평균 기준선은
+        # 전체 유니버스로 유지**한다. 기준선까지 유동 심볼로 좁히면 9장에서 본
+        # 생존편향과 같은 경로로 편향이 생긴다.
+        keep = {x.strip().upper() for x in a.keep_symbols.split(",") if x.strip()}
+        P["_signal_mask"] = np.array([s in keep for s in P["syms"]])
+        print(f"(신호 발생 심볼 {int(P['_signal_mask'].sum())}개로 제한 — "
+              f"시장평균 기준선은 {len(P['syms'])}개 전체 유지)")
+        print()
+
     if a.drop_symbols:
         drop = {x.strip().upper() for x in a.drop_symbols.split(",") if x.strip()}
         keepj = [j for j, s in enumerate(P["syms"]) if s not in drop]
@@ -474,6 +486,10 @@ def main():
         print()
 
     SIG = signals(P, I, FRM, MET)
+    if "_signal_mask" in P:
+        m = P["_signal_mask"][None, :]
+        for k in SIG:
+            SIG[k] = np.where(m, SIG[k], 0).astype(np.int8)
     F = forward(P, hor)
     FN = {}
     for h in hor:

@@ -64,6 +64,8 @@ def main():
     p.add_argument("--sleep", type=float, default=0.35)
     p.add_argument("--out", default="scratch_edge_3m_30d.npz")
     p.add_argument("--symbols", default="")
+    p.add_argument("--min-frac", type=float, default=0.9,
+                   help="요청 봉수 대비 이 비율 미만이면 건너뛴다")
     a = p.parse_args()
 
     if a.symbols:
@@ -80,7 +82,7 @@ def main():
     for i, s in enumerate(syms, 1):
         b = fetch_back(s, a.interval, want, a.sleep)
         b4 = fetch_back(s, "4h", want4h, a.sleep)
-        if len(b) < want * 0.9 or len(b4) < 260:
+        if len(b) < want * a.min_frac or len(b4) < 260:
             print(f"[{i}/{len(syms)}] {s} SKIP (n={len(b)} 4h={len(b4)})", flush=True)
             continue
         arrs[f"{s}|{a.interval}"] = np.asarray(b, dtype=np.float64)
