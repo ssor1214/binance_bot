@@ -15,8 +15,21 @@ cm_signal_edge.py 의 확장. 세 가지가 다르다.
     청산규칙·슬롯·수수료는 넣지 않는다. 청산규칙을 넣으면 승률이 청산규칙과
     동어반복이 되기 때문이다(CLAUDE.md 판정 참고).
 
-비용선: 왕복 0.11% (수수료 0.07 + 슬리피지 가정 0.04). 이 선을 못 넘는 신호는
-진입축을 아무리 튜닝해도 돈을 벌 수 없다.
+비용선 (2026-08-31 실측 재교정, --rescore 참조):
+    종전의 단일선 0.11%(수수료 0.07 + 슬리피지 0.04)는 **체결 방식을 특정하지 않은**
+    값이었다. e3 원장 1,017건에서 건별 왕복 수수료율을 뽑으니 경로별로 갈린다.
+      - 지정가 TP 경로 : 0.0401%  (maker 진입 + maker 청산)
+      - 손절 경로      : 0.0504%~0.07% (maker 진입 + taker 손절)
+    그리고 edge_lab 의 측정 규약(시가 진입/종가 청산)은 **둘 다 taker** 이므로
+    0.10% 를 써야 한다. 즉 하나의 선이 아니라 두 개다.
+      보수선(taker/taker) = 0.10 + 슬리피지*2
+      e3선  (maker/maker) = 0.04 + 0     (지정가는 스프레드를 건너지 않는다)
+    두 선 **사이**에 있는 신호는 기각도 채택도 아니고 "체결을 maker 로 만들 수 있으면
+    산다"는 **조건부**다. 이 칸이 종전에 없어서 후보가 통째로 기각되고 있었다.
+
+    슬리피지는 실측하지 못했다. trade_ledger 의 slippage_pct 는 exit_price 가 mark
+    추정치라 체결가-마크 괴리를 재고 있을 뿐 실행비용이 아니다(익절 +0.68% / 손절
+    -0.72% 로 부호가 청산방향과 상관). 그래서 가정으로 남기되 --slip 으로 노출한다.
 """
 import argparse
 import math
@@ -27,7 +40,9 @@ import numpy as np
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-COST_PCT = 0.11
+# 편도 수수료 실측(e3 원장): maker 0.02% / taker 0.05%.
+FEE_TAKER_RT = 0.10   # 시가진입+종가청산 = taker 왕복
+FEE_MAKER_RT = 0.04   # 지정가 진입 + 지정가 TP = maker 왕복
 
 
 # ---------------------------------------------------------------- 지표 (열 단위)
@@ -283,7 +298,20 @@ def signals(P, I, FRM=None, M=None):
     htf_up, htf_dn = I["htf"] == 1, I["htf"] == 0
     put("CM + 4h정합", cm_l & htf_up, cm_s & htf_dn)
 
-    # --- 메인봇 뼈대: 볼밴 돌파 + EMA추세 + RSI (CLAUDE.md 원칙 0 참조) ------
+    # --- 원칙 0 분해 (CM 을 구성요소로 쪼갠다) ------------------------------
+    # CM 진입 규칙 = "HullMA20 기울기 방향" AND "종가가 HullMA 위/아래" 두 조건의 곱이다.
+    # 이 둘을 한 번도 따로 재본 적이 없다. 그리고 네 번째 조합(기울기는 위인데 종가가
+    # HullMA 아래 = 상승추세 눌림)은 **라이브 e3 가 실제로 진입하는 자리**에 가장 가까운데
+    # (e3 는 CM 신호 후 EMA5 눌림을 기다린다) 지금까지 측정 대상에 없었다.
+    # 사전 등록: 아래 6개만 본다. 좋아 보이는 걸 더 찾아 붙이지 않는다.
+    put("[분해] 기울기만", up, dn)
+    put("[분해] 가격위치만", C > I["hma"], C < I["hma"])
+    put("[분해] 눌림(기울기↑ & 종가<HMA)", up & (C < I["hma"]), dn & (C > I["hma"]))
+    put("[분해] 눌림 + 4h정합",
+        up & (C < I["hma"]) & (I["htf"] == 1), dn & (C > I["hma"]) & (I["htf"] == 0))
+    put("[분해] CM + 4h역행", cm_l & (I["htf"] == 0), cm_s & (I["htf"] == 1))
+
+    # --- 메인봇 뼈대: 볼밴 돌파 + EMA돌파 + RSI (CLAUDE.md 원칙 0 참조) ------
     trend_l = I["ema20"] > I["ema50"]
     trend_s = I["ema20"] < I["ema50"]
     brk_l = (prevC <= prevU) & (C >= I["bbu"]) & (C > prevH)
@@ -441,6 +469,11 @@ def main():
     p.add_argument("--split", type=int, default=0, help="표본을 N등분해 국면별로 재측정")
     p.add_argument("--funding", default="", help="펀딩비 npz (쉼표 구분 가능)")
     p.add_argument("--metrics", default="", help="OI/포지셔닝 npz (edge_metrics.py 산출물)")
+    p.add_argument("--slip", type=float, default=0.02,
+                   help="**편도** 슬리피지 가정 %%. 실측 불가라 가정치다(기본 0.02 "
+                        "= 종전 왕복 0.04 가정과 동일). taker 선에만 왕복으로 더한다.")
+    p.add_argument("--rescore", action="store_true",
+                   help="두 비용선(taker/maker)으로 전 신호x전 지평을 재채점한 표를 낸다")
     a = p.parse_args()
     hor = [int(x) for x in a.horizons.split(",")]
 
@@ -529,6 +562,7 @@ def main():
         print("한 위상만 좋은 신호는 엣지가 아니라 위상 운이다. 판정은 위상평균으로 한다.")
         print()
 
+    SIG_FULL = {k: v.copy() for k, v in SIG.items()}   # stride 적용 전 원본(재채점 위상스윕용)
     if a.stride > 1:
         # 겹치는 보유구간은 서로 독립이 아니다. h봉 보유를 h봉 간격으로만 표본추출하면
         # 선행수익률이 거의 겹치지 않아 t 가 정직해진다. 건수는 stride 배로 줄어든다.
@@ -606,8 +640,71 @@ def main():
             sl = slice(k * step, (k + 1) * step if k < a.split - 1 else T)
             table(f"드리프트 중립 — 구간 {k + 1}/{a.split}", FN, sl)
 
-    print(f"비용선: 왕복 {COST_PCT}% (수수료 0.07 + 슬리피지 가정 0.04). "
-          f"건당 값이 이 선을 못 넘으면 진입축을 어떻게 튜닝해도 못 번다.")
+    line_taker = FEE_TAKER_RT + 2.0 * a.slip
+    line_maker = FEE_MAKER_RT
+
+    if a.rescore:
+        # --- 비용선 재채점 -------------------------------------------------
+        # 종전 단일선 0.11% 는 체결 방식을 특정하지 않은 값이었다. 두 선으로 나눠
+        # 다시 매긴다. 판정 규칙은 CLAUDE.md 원칙 0 보강 2 그대로:
+        #   평균과 심볼중앙값이 **둘 다** 선 위 + 시각t·심볼t 가 **둘 다** 2 이상.
+        # 어느 하나라도 못 넘으면 그 선은 통과가 아니다.
+        def verdict(m, med, tt, ts, line):
+            if min(m, med) <= line:
+                return False
+            return abs(tt) >= 2.0 and abs(ts) >= 2.0
+
+        print(f"[재채점] 보수선(taker/taker) {line_taker:.3f}%"
+              f" = 수수료 {FEE_TAKER_RT:.2f} + 슬리피지 {a.slip:.3f}x2"
+              f"   /   e3선(maker/maker) {line_maker:.3f}% = 수수료만")
+        print("판정: ○○ 두 선 다 통과(무조건 채택) / ·○ e3선만 통과(**조건부** — "
+              "진입·청산을 지정가로 만들 수 있으면 산다) / ·· 기각")
+        print(f"{'신호':<30}{'지평':>10}{'건당|심볼중앙':>24}{'t(시각/심볼)':>16}"
+              f"{'최악위상':>9}{'판정':>8}")
+        hit_c = hit_b = 0
+        # stride 를 걸었다면 위상 0 만 보지 않는다. 전 위상을 돌려 **평균으로 판정**하고
+        # **최악 위상**도 같이 찍는다(커밋 792034c: 위상은 숨은 자유도다).
+        phases = range(a.stride) if a.stride > 1 else [0]
+        for name in SIG_FULL:
+            for h in hor:
+                rs = []
+                for off in phases:
+                    if a.stride > 1:
+                        keep = np.zeros(T, dtype=bool)
+                        keep[off::a.stride] = True
+                        sg = np.where(keep[:, None], SIG_FULL[name], 0).astype(np.int8)
+                    else:
+                        sg = SIG_FULL[name]
+                    r = stats(sg, FN[h])
+                    if r is not None:
+                        rs.append(r)
+                if not rs:
+                    continue
+                m = float(np.mean([r[1] for r in rs]))
+                med = float(np.nanmean([r[2] for r in rs]))
+                tt = float(np.mean([r[3] for r in rs]))
+                ts = float(np.mean([r[4] for r in rs]))
+                worst = min(r[1] for r in rs)
+                ok_t = verdict(m, med, tt, ts, line_taker)
+                ok_m = verdict(m, med, tt, ts, line_maker)
+                if not ok_m:
+                    continue          # 두 선 다 못 넘으면 표에 싣지 않는다(기존 기각 유지)
+                mark = "○○" if ok_t else "·○"
+                hit_b += ok_t
+                hit_c += (ok_m and not ok_t)
+                mm = h * bar_min
+                hl = f"{mm}분" if mm < 120 else f"{mm / 60:g}시간"
+                wf = f"{worst:+.3f}" if len(phases) > 1 else "  -  "
+                print(f"{name:<30}{hl:>10}{m:+11.4f}|{med:+9.4f}"
+                      f"{tt:+8.1f}/{ts:+6.1f}{wf:>9}{mark:>8}")
+        if hit_b == 0 and hit_c == 0:
+            print("  (통과한 신호x지평이 하나도 없다 — 비용선을 내려도 기각 목록은 그대로다)")
+        else:
+            print(f"  -> 무조건 채택 {hit_b}건 / 조건부(maker 필요) {hit_c}건")
+        print()
+
+    print(f"비용선: 보수(taker/taker) {line_taker:.3f}% / e3(maker/maker) {line_maker:.3f}%. "
+          f"슬리피지 {a.slip:.3f}%(편도)는 **실측 불가라 가정**이며 taker 선에만 붙는다.")
     print("표기 = 건당평균|심볼중앙값 (시각클러스터 t / 심볼클러스터 t).")
     print("판정 규칙: 평균과 중앙값이 같은 부호로 붙어 있고 두 t 가 모두 살아 있어야 엣지로 본다. "
           "평균만 크고 중앙값이 0 근처면 소수 급등종목의 꼬리이지 반복 가능한 엣지가 아니다.")
