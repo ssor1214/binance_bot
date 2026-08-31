@@ -283,6 +283,8 @@ def main():
     p.add_argument("--interval", default="3m")
     p.add_argument("--horizons", default="5,20,40,80")
     p.add_argument("--raw", action="store_true", help="드리프트 중립화 전 값도 함께 출력")
+    p.add_argument("--stride", type=int, default=1,
+                   help="N봉마다 한 번만 표본추출 — 보유구간 겹침 제거용")
     p.add_argument("--detail", default="", help="이름에 이 문자열이 든 신호를 롱/숏·심볼별로 분해")
     p.add_argument("--split", type=int, default=0, help="표본을 N등분해 국면별로 재측정")
     a = p.parse_args()
@@ -290,7 +292,7 @@ def main():
 
     P = load_panel(a.cache, a.interval)
     T, S = P["c"].shape
-    bar_min = int(a.interval.rstrip("m"))
+    bar_min = int(a.interval[:-1]) * (60 if a.interval.endswith("h") else 1)
     days = T * bar_min / 1440.0
     print(f"패널: {S}심볼 x {T}봉 ({a.interval}, 약 {days:.1f}일)\n")
 
@@ -302,9 +304,23 @@ def main():
         with np.errstate(invalid="ignore"):
             FN[h] = F[h] - np.nanmean(F[h], axis=1, keepdims=True)
 
+    if a.stride > 1:
+        # 겹치는 보유구간은 서로 독립이 아니다. h봉 보유를 h봉 간격으로만 표본추출하면
+        # 선행수익률이 거의 겹치지 않아 t 가 정직해진다. 건수는 stride 배로 줄어든다.
+        keep = np.zeros(T, dtype=bool)
+        keep[::a.stride] = True
+        for k in SIG:
+            SIG[k] = np.where(keep[:, None], SIG[k], 0).astype(np.int8)
+        print(f"(stride={a.stride}: {a.stride}봉마다 한 번만 표본추출해 보유구간 겹침을 제거)")
+        print()
+
     def table(title, FF, rowslice=None):
         print(f"[{title}] 진입=다음봉 시가 / 청산=h봉 뒤 종가, 단위 % (건당)")
-        head = "".join(f"{h * bar_min:>3}분".rjust(30) for h in hor)
+        def hlab(h):
+            m = h * bar_min
+            return f"{m}분" if m < 120 else f"{m / 60:g}시간"
+
+        head = "".join(hlab(h).rjust(30) for h in hor)
         print(f"{'신호':<30}{'건수':>9}{'건/심볼일':>11}{head}")
         for name, sg in SIG.items():
             sgx = sg if rowslice is None else sg[rowslice]
