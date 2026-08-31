@@ -64,3 +64,7 @@ qa_ws_trade_v2_testnet_isolated/
 pytest_out.txt
 col.txt
 tier2_fetch.log
+
+# [2026-08-31] 은퇴시킨 원장/상태 파일(로그 데이터) 및 런처 백업본은 추적하지 않는다
+logs/*.migrated_*
+*.backup_before_*

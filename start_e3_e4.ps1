@@ -1,4 +1,7 @@
-# e3 그림자(shadow) 런처 — dry-run A/B.
+# e3 그림자 = **e4** 런처 — dry-run A/B.
+#
+# [2026-08-28] instance-tag 를 shadow -> e4 로 바꿨다(CLAUDE.md 명명 규칙 확정 반영).
+#   기존 logs/*_shadow.* 는 *_e4.* 로 이어붙이고 원본은 .migrated_20260828 로 은퇴시켰다.
 #
 # ⚠ **용도는 '진입 비교' 전용이다. 손익 비교에 쓰면 안 된다.**
 #   dry-run 에는 거래소 주문이 없어서 청산 구조가 라이브와 완전히 다르다:
@@ -14,7 +17,7 @@
 #      -> 청산 비교는 replay_exits.py(원장 반사실 재생)로 한다.
 #
 # 라이브를 절대 건드리지 않기 위한 세 가지:
-#   --instance-tag shadow : 원장/상태/로그/PID 파일 전부 분리
+#   --instance-tag e4     : 원장/상태/로그/PID 파일 전부 분리
 #   --attach-ws           : 워커를 띄우지 않고 라이브 워커 캐시에 읽기로만 붙는다
 #   --dry-run             : 주문 없음 + 봇 락을 잡지 않아 라이브와 공존
 #   --no-telegram         : 알림 중복 방지
@@ -23,7 +26,7 @@
 Set-Location $PSScriptRoot
 $argv = @(
   'scripts\scalp_bot_e3.py',
-  '--dry-run','--instance-tag','shadow','--attach-ws','--no-telegram',
+  '--dry-run','--instance-tag','e4','--attach-ws','--no-telegram',
   '--signal-tf-min','3','--tranches','1','--cm-atype','4',
   '--min-leg-margin','30','--max-leg-margin','50',
   '--max-concurrency','10','--max-same-side','3',
@@ -42,4 +45,4 @@ $argv = @(
   '--giveback-arm-roe','0','--giveback-frac','0.4',
   '--i-know-it-loses'
 )
-Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList $argv -WindowStyle Hidden -RedirectStandardError "logs\e3_shadow_crash.log"
+Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList $argv -WindowStyle Hidden -RedirectStandardError "logs\e3_e4_crash.log"
