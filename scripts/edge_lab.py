@@ -195,8 +195,67 @@ def build_indicators(P):
     return ind
 
 
+def load_funding(paths, P, bar_min, hor):
+    """보유구간 펀딩 정산액(FD)과 각 봉 시점의 최신 펀딩률(FRM)을 만든다.
+
+    부호 규약: rate > 0 이면 **롱이 지불한다**. 방향 부호(sgn)는 stats() 가 곱하므로
+    여기서는 '롱 기준 비용'인 rate 합만 만들어 두고 가격수익률에서 빼면
+    롱/숏 양쪽이 자동으로 맞는다.
+        롱 순익 = +(ret - fund),  숏 순익 = -(ret - fund) = -ret + fund
+    """
+    T, S = P["c"].shape
+    bar_ms = bar_min * 60_000
+    zs = [np.load(ROOT / x, allow_pickle=True) for x in paths]
+    cum = np.zeros((T + 1, S))
+    frm = np.full((T, S), np.nan)
+    edges = np.concatenate([P["t"], [P["t"][-1] + bar_ms]])
+    miss = 0
+    for j, sym in enumerate(P["syms"]):
+        key = f"{sym}|funding"
+        z = next((z for z in zs if key in z), None)
+        if z is None:
+            cum[:, j] = np.nan
+            miss += 1
+            continue
+        fr = z[key]
+        pos = np.searchsorted(fr[:, 0], edges, side="right")
+        cum[:, j] = np.concatenate([[0.0], np.cumsum(fr[:, 1])])[pos]
+        # 각 봉 시점에서 '마지막으로 정산된' 펀딩률 (미래 정보 없음)
+        idx = np.clip(pos[:T] - 1, -1, len(fr) - 1)
+        v = np.where(idx >= 0, fr[np.clip(idx, 0, len(fr) - 1), 1], np.nan)
+        frm[:, j] = v
+    FD = {}
+    for h in hor:
+        f = np.full((T, S), np.nan)
+        # 진입 = 봉 i+1 시가(t[i+1]), 청산 = 봉 i+1+h 마감(t[i+1+h] + bar_ms)
+        f[:T - 1 - h] = (cum[2 + h:T + 1] - cum[1:T - h]) * 100.0
+        FD[h] = f
+    return FD, frm, miss
+
+
+def load_metrics(path, P):
+    """metrics 를 봉 시각에 맞춰 리샘플한다 — 각 봉 시각 **이전의 마지막 관측**만 쓴다."""
+    T, S = P["c"].shape
+    z = np.load(ROOT / path, allow_pickle=True)
+    cols = [str(x) for x in z["__cols__"]]
+    M = {c: np.full((T, S), np.nan) for c in cols}
+    have = 0
+    for j, sym in enumerate(P["syms"]):
+        key = f"{sym}|metrics"
+        if key not in z:
+            continue
+        m = z[key]
+        pos = np.searchsorted(m[:, 0], P["t"], side="right") - 1
+        good = pos >= 0
+        for k, c in enumerate(cols, start=1):
+            v = np.where(good, m[np.clip(pos, 0, len(m) - 1), k], np.nan)
+            M[c][:, j] = v
+        have += 1
+    return M, have
+
+
 # ---------------------------------------------------------------- 신호 정의
-def signals(P, I):
+def signals(P, I, FRM=None, M=None):
     C, H, L = P["c"], P["h"], P["l"]
 
     def prev(a):
@@ -249,6 +308,57 @@ def signals(P, I):
     put("RSI모멘텀 + EMA추세", rmom_l & trend_l, rmom_s & trend_s)
     put("RSI모멘텀 + 4h정합", rmom_l & htf_up, rmom_s & htf_dn)
     put("RSI모멘텀 + CM방향", rmom_l & cm_l, rmom_s & cm_s)
+
+    # --- 펀딩 캐리 계열 -----------------------------------------------------
+    # 지표가 아니라 '남들이 한쪽으로 쏠려서 내는 돈'을 받는 쪽에 서는 구성이다.
+    # 펀딩이 높다(롱 과밀) -> 숏, 음수다(숏 과밀) -> 롱. 판정은 반드시 --funding 을
+    # 켜고 봐야 한다. 받는 펀딩이 수익원의 절반이기 때문이다.
+    if FRM is not None:
+        fq = np.nanquantile(FRM, [0.2, 0.8], axis=1)
+        flo, fhi = fq[0][:, None], fq[1][:, None]
+        put("펀딩캐리 횡단면(고펀딩 숏)", FRM <= flo, FRM >= fhi)
+        put("펀딩캐리 역방향(고펀딩 롱)", FRM >= fhi, FRM <= flo)
+        for th in (0.0003, 0.001):
+            put(f"펀딩캐리 절대 {th * 100:.2f}%", FRM <= -th, FRM >= th)
+        put("펀딩캐리 + EMA추세 정합",
+            (FRM <= flo) & trend_l, (FRM >= fhi) & trend_s)
+
+    # --- OI / 포지셔닝 계열 (klines 에 없는 정보) ---------------------------
+    if M is not None:
+        LB = 24                       # 1일 변화
+        def chg(a):
+            r = np.full(a.shape, np.nan)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                r[LB:] = a[LB:] / a[:-LB] - 1.0
+            return r
+
+        doi = chg(M["oi"])
+        dpx = chg(C)
+        up_px, dn_px = dpx > 0, dpx < 0
+        oi_up = doi > 0.02            # 미결제약정 2% 이상 증가
+        oi_dn = doi < -0.02
+        # 신규 자금이 들어오며 움직인 방향 = 추세지속 가설
+        put("OI증가+가격방향(추세지속)", oi_up & up_px, oi_up & dn_px)
+        # 포지션이 청산되며 움직인 방향 = 되돌림 가설
+        put("OI감소+가격방향(페이드)", oi_dn & up_px, oi_dn & dn_px)
+
+        def xq(a, name, lo_long=True):
+            q = np.nanquantile(a, [0.2, 0.8], axis=1)
+            lo, hi = q[0][:, None], q[1][:, None]
+            weak, strong = a <= lo, a >= hi
+            if lo_long:
+                put(name, weak, strong)
+            else:
+                put(name, strong, weak)
+
+        # 군중이 롱으로 쏠렸을 때 반대(역추세)와 순방향(모멘텀)을 둘 다 잰다
+        xq(M["acct"], "전체계정 롱숏비 역추세(과밀롱=숏)", lo_long=True)
+        xq(M["acct"], "전체계정 롱숏비 순방향", lo_long=False)
+        xq(M["tt_sum"], "상위트레이더 포지션 순방향", lo_long=False)
+        xq(M["tt_sum"], "상위트레이더 포지션 역추세", lo_long=True)
+        xq(M["taker"], "taker 매수우위 순방향", lo_long=False)
+        xq(M["taker"], "taker 매수우위 역추세", lo_long=True)
+        xq(doi, "OI 증가율 상위 롱", lo_long=False)
 
     # --- 횡단면 계열: 같은 시각 다른 심볼 대비 상대강도 ----------------------
     for lb in (5, 20):
@@ -323,7 +433,8 @@ def main():
                    help="N봉마다 한 번만 표본추출 — 보유구간 겹침 제거용")
     p.add_argument("--detail", default="", help="이름에 이 문자열이 든 신호를 롱/숏·심볼별로 분해")
     p.add_argument("--split", type=int, default=0, help="표본을 N등분해 국면별로 재측정")
-    p.add_argument("--funding", default="", help="펀딩비 npz (edge_funding.py 산출물)")
+    p.add_argument("--funding", default="", help="펀딩비 npz (쉼표 구분 가능)")
+    p.add_argument("--metrics", default="", help="OI/포지셔닝 npz (edge_metrics.py 산출물)")
     a = p.parse_args()
     hor = [int(x) for x in a.horizons.split(",")]
 
@@ -343,47 +454,31 @@ def main():
     print(f"패널: {S}심볼 x {T}봉 ({a.interval}, 약 {days:.1f}일)\n")
 
     I = build_indicators(P)
-    SIG = signals(P, I)
+    # 펀딩은 신호보다 먼저 만든다 — 펀딩 캐리 신호가 이 값을 쓰기 때문이다.
+    FD, FRM = {}, None
+    if a.funding:
+        FD, FRM, miss = load_funding(
+            [x for x in a.funding.split(",") if x], P, bar_min, hor)
+        avg = {h: np.nanmean(FD[h]) for h in hor}
+        print("펀딩비 적용: " + " / ".join(
+            f"{h * bar_min / 60:g}시간 보유 평균 {avg[h]:+.4f}%(롱 기준 비용)" for h in hor))
+        cov = S - miss
+        print(f"  펀딩 이력 보유 심볼 {cov}/{S} — 캐리 신호는 이 {cov}개에서만 발생한다"
+              f"(시장평균 기준선은 {S}개 전체로 계산).")
+        print()
+
+    MET = None
+    if a.metrics:
+        MET, have = load_metrics(a.metrics, P)
+        print(f"OI/포지셔닝 지표: {have}/{S} 심볼 보유 — 해당 신호는 이 심볼들에서만 발생한다.")
+        print()
+
+    SIG = signals(P, I, FRM, MET)
     F = forward(P, hor)
     FN = {}
     for h in hor:
         with np.errstate(invalid="ignore"):
             FN[h] = F[h] - np.nanmean(F[h], axis=1, keepdims=True)
-
-    FD = {}
-    if a.funding:
-        # 보유구간에 걸린 펀딩 정산액을 뺀다.
-        # 부호 규약: rate > 0 이면 롱이 지불한다. 신호 방향 부호(sgn)를 곱하는 것은
-        # stats() 이므로, 여기서는 "롱 기준 비용"인 rate 합을 그대로 만들어 두고
-        # 가격수익률에서 빼기만 하면 롱/숏 양쪽이 자동으로 맞는다.
-        #   롱 순익  = +(ret - fund),  숏 순익 = -(ret - fund) = -ret + fund
-        fz = np.load(ROOT / a.funding, allow_pickle=True)
-        bar_ms = bar_min * 60_000
-        cum = np.zeros((T + 1, S))
-        for j, s in enumerate(P["syms"]):
-            key = f"{s}|funding"
-            if key not in fz:
-                cum[:, j] = np.nan
-                continue
-            fr = fz[key]
-            # 각 봉 시각까지의 누적 펀딩률. 마지막 행은 마지막 봉의 '마감' 시각용.
-            edges = np.concatenate([P["t"], [P["t"][-1] + bar_ms]])
-            pos = np.searchsorted(fr[:, 0], edges, side="right")
-            cum[:, j] = np.concatenate([[0.0], np.cumsum(fr[:, 1])])[pos]
-        miss = int(np.isnan(cum[0]).sum())
-        for h in hor:
-            f = np.full((T, S), np.nan)
-            # 진입 = 봉 i+1 시가(t[i+1]), 청산 = 봉 i+1+h 마감(t[i+1+h] + bar_ms)
-            lo = cum[1:T - h]                 # t[i+1]        (i = 0..T-h-2)
-            hi = cum[2 + h:T + 1]             # t[i+1+h]+bar  (같은 i 범위)
-            f[:T - 1 - h] = (hi - lo) * 100.0
-            FD[h] = f
-        avg = {h: np.nanmean(FD[h]) for h in hor}
-        print("펀딩비 적용: " + " / ".join(
-            f"{h * bar_min / 60:g}시간 보유 평균 {avg[h]:+.4f}%(롱 기준 비용)" for h in hor))
-        if miss:
-            print(f"  주의: 펀딩 이력이 없는 심볼 {miss}개는 이 표에서 제외된다.")
-        print()
 
     if a.stride > 1:
         # 겹치는 보유구간은 서로 독립이 아니다. h봉 보유를 h봉 간격으로만 표본추출하면
