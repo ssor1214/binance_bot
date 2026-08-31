@@ -65,7 +65,7 @@ class E3ScriptTests(unittest.TestCase):
         self.assertFalse(out["cr_up"])
         self.assertFalse(out["cr_down"])
 
-    def test_cm_ultimate_custom_resolution_aligns_latest_htf_value(self):
+    def test_cm_ultimate_custom_resolution_uses_only_closed_htf_bars(self):
         base_rows = []
         for i in range(12):
             base_rows.append({
@@ -89,7 +89,67 @@ class E3ScriptTests(unittest.TestCase):
         settings = scalp_bot_e3.CMUltimateMASettings(use_current_resolution=False, len=2)
         out = scalp_bot_e3.cm_ultimate_ma_mtf_v2(pd.DataFrame(base_rows), pd.DataFrame(htf_rows), settings)
         self.assertIsNotNone(out)
-        self.assertAlmostEqual(out["out1"], (102.0 + 103.0) / 2.0)
+        # 마지막 차트봉은 00:33 이고 상위봉은 9분 간격(00:00/00:09/00:18/00:27)이다.
+        # 00:27 상위봉은 00:36 에야 마감하므로 그 종가(103)는 00:33 시점에 알 수 없다.
+        # 따라서 쓸 수 있는 최신 값은 00:18 봉까지의 SMA2 = (101+102)/2 다.
+        # (종전 구현은 여기서 (102+103)/2 를 돌려줬다 — 미마감 봉을 미리 본 lookahead 였다.)
+        self.assertAlmostEqual(out["out1"], (101.0 + 102.0) / 2.0)
+
+    def test_cm_ultimate_custom_resolution_accepts_epoch_ms_open_time(self):
+        """open_time 이 int64(ms) 여도 병합 키 dtype 이 깨지지 않아야 한다.
+
+        상위봉 시각을 span 만큼 미는 과정에서 median 이 float 라 컬럼이 float64 로
+        승격되면 merge_asof 가 'incompatible merge keys' 로 죽는다.
+        """
+        base = [{
+            "open_time": pd.Timestamp("2026-08-25 00:00:00") + pd.Timedelta(minutes=3 * i),
+            "open": 10.0, "high": 10.4, "low": 9.6, "close": 10.0 + i, "volume": 50.0,
+        } for i in range(12)]
+        htf = [{
+            "open_time": pd.Timestamp("2026-08-25 00:00:00") + pd.Timedelta(minutes=9 * i),
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0 + i, "volume": 200.0,
+        } for i in range(4)]
+        settings = scalp_bot_e3.CMUltimateMASettings(use_current_resolution=False, len=2)
+        expected = (101.0 + 102.0) / 2.0
+        for cast, label in ((int, "int64 ms"), (float, "float64 ms")):
+            b = [dict(r, open_time=cast(r["open_time"].timestamp() * 1000)) for r in base]
+            h = [dict(r, open_time=cast(r["open_time"].timestamp() * 1000)) for r in htf]
+            out = scalp_bot_e3.cm_ultimate_ma_mtf_v2(pd.DataFrame(b), pd.DataFrame(h), settings)
+            self.assertIsNotNone(out, msg=label)
+            self.assertAlmostEqual(out["out1"], expected, msg=label)
+
+    def test_cm_ultimate_custom_resolution_needs_two_htf_bars(self):
+        """상위봉이 1개면 간격을 못 재므로 조용히 틀리지 말고 판정 불가를 내야 한다."""
+        base = [{
+            "open_time": pd.Timestamp("2026-08-25 00:00:00") + pd.Timedelta(minutes=3 * i),
+            "open": 10.0, "high": 10.4, "low": 9.6, "close": 10.0 + i, "volume": 50.0,
+        } for i in range(12)]
+        htf = [{
+            "open_time": pd.Timestamp("2026-08-25 00:00:00"),
+            "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 200.0,
+        }]
+        settings = scalp_bot_e3.CMUltimateMASettings(use_current_resolution=False, len=2)
+        self.assertIsNone(
+            scalp_bot_e3.cm_ultimate_ma_mtf_v2(pd.DataFrame(base), pd.DataFrame(htf), settings))
+
+    def test_cm_ultimate_custom_resolution_has_no_lookahead(self):
+        """상위봉이 마감되기 전에는 그 봉의 값이 절대 새어 나오면 안 된다."""
+        htf_rows = [{
+            "open_time": pd.Timestamp("2026-08-25 00:00:00") + pd.Timedelta(minutes=30 * i),
+            "open": 100.0, "high": 101.0, "low": 99.0,
+            # 마지막 상위봉만 종가가 폭등한다. 이 값이 새면 out1 이 튄다.
+            "close": 100.0 if i < 2 else 1000.0,
+            "volume": 200.0,
+        } for i in range(3)]
+        # 차트봉을 01:00~01:27 로 둔다 — 마지막 상위봉(01:00 시작)은 01:30 에야 마감한다.
+        base_rows = [{
+            "open_time": pd.Timestamp("2026-08-25 01:00:00") + pd.Timedelta(minutes=3 * i),
+            "open": 10.0, "high": 10.4, "low": 9.6, "close": 10.0, "volume": 50.0,
+        } for i in range(10)]
+        settings = scalp_bot_e3.CMUltimateMASettings(use_current_resolution=False, len=1)
+        out = scalp_bot_e3.cm_ultimate_ma_mtf_v2(pd.DataFrame(base_rows), pd.DataFrame(htf_rows), settings)
+        self.assertIsNotNone(out)
+        self.assertAlmostEqual(out["out1"], 100.0, msg="미마감 상위봉의 종가가 새어 나왔다")
 
     def test_cm_ultimate_hull_and_cross_flags_are_available(self):
         rows = []
@@ -1297,6 +1357,80 @@ class OrderBackoffTests(unittest.TestCase):
             scalp_bot_e3.order_is_backed_off("BTCUSDT", "LONG", 100.0, now=999.0))
         self.assertFalse(
             scalp_bot_e3.order_is_backed_off("BTCUSDT", "LONG", 100.0, now=1001.0))
+
+class LedgerVsExchangeTests(unittest.TestCase):
+    """정합성 대조 — 08-21 사고(손실 19건 원장 누락)를 잡는 화재경보."""
+
+    NOW = 1_787_000_000.0
+
+    def _inc(self, sym, pnl=None, com=None):
+        rows = []
+        if pnl is not None:
+            rows.append({"incomeType": "REALIZED_PNL", "symbol": sym, "income": str(pnl)})
+        if com is not None:
+            rows.append({"incomeType": "COMMISSION", "symbol": sym, "income": str(com)})
+        return rows
+
+    def _led(self, sym, pnl, com=0.0, age_sec=60.0):
+        return json.dumps({"symbol": sym, "real_realized_pnl": pnl,
+                           "real_commission": com, "exited_at": self.NOW - age_sec,
+                           "dry_run": False})
+
+    def test_clean_books_raise_no_alarm(self):
+        inc = self._inc("BTCUSDT", 1.5) + self._inc("ETHUSDT", -0.7)
+        led = [self._led("BTCUSDT", 1.5), self._led("ETHUSDT", -0.7)]
+        rep = scalp_bot_e3.ledger_vs_exchange_report(inc, led, 0.0, self.NOW)
+        self.assertFalse(rep["truncated"])
+        self.assertEqual(rep["missing"], [])
+        self.assertEqual(rep["mismatch"], [])
+
+    def test_missing_ledger_row_is_detected(self):
+        """08-21 실패 모드: 거래소엔 청산이 있는데 원장에 없다."""
+        inc = self._inc("BTCUSDT", 1.5) + self._inc("DOGEUSDT", -9.9)
+        led = [self._led("BTCUSDT", 1.5)]
+        rep = scalp_bot_e3.ledger_vs_exchange_report(inc, led, 0.0, self.NOW)
+        self.assertEqual(rep["missing"], ["DOGEUSDT"])
+
+    def test_open_position_commission_does_not_trigger_alarm(self):
+        """미청산 포지션의 진입 수수료는 거래소에만 있다 — 오경보 금지.
+
+        종전 구현은 수수료를 합계에 넣어 재시작 직후 **항상** 경보를 냈다.
+        """
+        inc = (self._inc("BTCUSDT", 1.5, com=-0.08)
+               + self._inc("XRPUSDT", None, com=-0.19))   # 아직 안 닫힌 포지션
+        led = [self._led("BTCUSDT", 1.5, com=0.08)]
+        rep = scalp_bot_e3.ledger_vs_exchange_report(inc, led, 0.0, self.NOW)
+        self.assertEqual(rep["missing"], [], "수수료만 있는 심볼을 누락으로 오인하면 안 된다")
+        self.assertEqual(rep["mismatch"], [])
+
+    def test_truncated_income_history_is_not_judged(self):
+        """limit 에 닿았으면 합계가 불완전하다 — 틀린 숫자 대신 판정 불가."""
+        inc = self._inc("BTCUSDT", 1.0) * 4
+        rep = scalp_bot_e3.ledger_vs_exchange_report(
+            inc, [self._led("BTCUSDT", 4.0)], 0.0, self.NOW, limit=len(inc))
+        self.assertTrue(rep["truncated"])
+
+    def test_symbol_level_mismatch_is_surfaced(self):
+        """스칼라 한 개가 아니라 '어느 심볼이 얼마나' 를 돌려줘야 진단이 된다."""
+        inc = self._inc("BTCUSDT", 1.5) + self._inc("LTCUSDT", -0.36)
+        led = [self._led("BTCUSDT", 1.5), self._led("LTCUSDT", -2.33)]
+        rep = scalp_bot_e3.ledger_vs_exchange_report(inc, led, 0.0, self.NOW)
+        self.assertEqual(rep["missing"], [])
+        self.assertEqual(len(rep["mismatch"]), 1)
+        sym, exch, ledv, diff = rep["mismatch"][0]
+        self.assertEqual(sym, "LTCUSDT")
+        self.assertAlmostEqual(diff, 1.97, places=2)
+
+    def test_window_is_capped_to_six_hours(self):
+        """창이 무한히 자라면 income_history 가 잘린다 — 6시간으로 고정한다."""
+        old = self._led("BTCUSDT", 99.0, age_sec=10 * 3600)   # 창 밖
+        new = self._led("BTCUSDT", 1.5, age_sec=60)           # 창 안
+        rep = scalp_bot_e3.ledger_vs_exchange_report(
+            self._inc("BTCUSDT", 1.5), [old, new], 0.0, self.NOW)
+        self.assertLessEqual(rep["window_h"], 6.01)
+        self.assertAlmostEqual(rep["led_pnl"], 1.5, places=6)
+        self.assertEqual(rep["mismatch"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

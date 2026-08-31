@@ -123,6 +123,7 @@ class Pos:
     # 청산이 taker(0.05%) 대신 maker(0.02%) 로 나간다.
     tp_limit_price: float = 0.0
     tp_order_id: int = 0
+    tp_order_placed_at: float = 0.0
     # [2026-08-27] 되돌림 청산을 **지정가로 먼저 시도**할 때의 마감 시각.
     # >0 이면 이미 지정가를 걸어둔 상태다(중복 발동 방지).
     gb_pending: float = 0.0
@@ -1006,9 +1007,33 @@ def cm_ultimate_ma_mtf_v2(df, mtf_df=None, settings: CMUltimateMASettings | None
         out2_series = avg2
     else:
         import pandas as _pd
+        # [2026-08-28 lookahead 수정] 종전에는 상위봉의 **open_time** 으로 backward 병합했다.
+        # 그러면 open_time=T 인 상위봉의 out1(=T+span 에 확정되는 종가 기반 값)이
+        # [T, T+span) 구간의 차트봉에 붙는다 — **아직 마감되지 않은 봉의 종가를 미리 보는 것**이다.
+        # 백테스트에서는 lookahead 이고 라이브에서는 리페인트다(봉 안에서 판정이 뒤집힌다).
+        # TradingView 의 security(..., lookahead_off) 는 상위봉이 **마감된 뒤**에만 값을 주므로
+        # 원본과 맞추려면 상위봉 시각을 span 만큼 밀어 '마감 시각' 으로 병합해야 한다.
+        #
+        # 이 경로는 --cm-use-alt-resolution 을 켤 때만 탄다(현재 라이브는 꺼져 있어 미사용).
+        # 원칙 0 의 "15분 HullMA20" 을 실제로 켜려면 이 경로를 쓰게 되므로 미리 고쳐 둔다.
+        # 함께 볼 것: --cm-res-custom 기본값이 "D"(일봉)라, 15분을 원하면 반드시 15 를 명시해야 한다.
+        _src_t = source_df["open_time"]
+        if len(_src_t) < 2:
+            return None                      # span 을 못 재면 안전하게 판정 불가
+        _span = _src_t.diff().median()
+        # Timedelta/숫자 어느 dtype 이든 통하는 0 비교
+        if _pd.isna(_span) or _span <= _span * 0:
+            return None
+        _right = source_df[["open_time"]].assign(out1=avg, out2=avg2)
+        _shifted = _src_t + _span                            # 마감 시각으로 이동
+        # [dtype 보존] open_time 이 int64(ms) 면 median 이 float 라 컬럼이 float64 로 승격되고,
+        # merge_asof 가 "incompatible merge keys" 로 죽는다. 원래 dtype 으로 되돌린다.
+        if _pd.api.types.is_integer_dtype(_src_t.dtype):
+            _shifted = _shifted.round().astype(_src_t.dtype)
+        _right["open_time"] = _shifted
         aligned = _pd.merge_asof(
             df[["open_time"]].sort_values("open_time"),
-            source_df[["open_time"]].assign(out1=avg, out2=avg2).sort_values("open_time"),
+            _right.sort_values("open_time"),
             on="open_time",
             direction="backward",
         )
@@ -1307,10 +1332,12 @@ def sync_tp_limit(ex, pos, dry_run: bool, say) -> None:
     try:
         r = ex.close_limit_position(pos.symbol, pos.side, abs(pos.qty), pos.tp_limit_price)
         pos.tp_order_id = int((r or {}).get("orderId") or 0)
+        pos.tp_order_placed_at = time.time()
         say(f"지정가 TP 등록 {pos.symbol} {pos.side} {pos.tp_limit_price:.8f} "
             f"qty={pos.qty} (CM 최대익절선 기준)")
     except Exception as e:
         pos.tp_order_id = 0
+        pos.tp_order_placed_at = 0.0
         say(f"지정가 TP 등록 실패 {pos.symbol}: {e} - 봇 폴링 익절로 대체")
 
 
@@ -1584,13 +1611,93 @@ def start_ws(symbols):
     env = dict(os.environ)
     env.update({"WS_WORKER_ROLE": "market", "WS_SHARD_INDEX": "0", "WS_SHARD_COUNT": "1",
                 "WS_WORKER_SYMBOLS": json.dumps(list(symbols), ensure_ascii=False),
-                "WS_KLINE_HISTORY_LEN": "150", "WS_KLINE_MAX_STALENESS_SEC": "90"})
+                "WS_KLINE_HISTORY_LEN": "150", "WS_KLINE_MAX_STALENESS_SEC": "90",
+                # 1m cache supplies both the 1m execution view and the 5m CM view.
+                "INTERVAL": "1m"})
     proc = subprocess.Popen([sys.executable, "-m", "bot.ws_worker"],
                             cwd=str(Path(__file__).resolve().parent.parent), env=env)
     _record_ws_pid(proc)
     return proc, FileBackedKlineCache(LOG_DIR / "ws_worker_cache.json",
                                       LOG_DIR / "ws_worker_heartbeat.txt",
                                       status_path=LOG_DIR / "ws_worker_status.json")
+
+
+# [2026-08-28] 정합성 대조는 **회계가 아니라 화재경보**다. 목적은 하나 —
+# "원장에 거래가 빠졌는가". (08-21 사고: 손실 19건이 원장에서 빠져 승률이 14%p
+# 부풀었는데 몇 시간 뒤에야 발견했다.)
+#
+# 종전 구현에는 결함 셋이 겹쳐 있었고, 그 결과 **경보가 상시로 울려 무시하게 됐다**:
+#   1) 창이 `run_started_at` 부터라 무한히 자란다. futures_income_history 는
+#      limit 에서 잘리는데(실측 12h 427행 / 24h 1000행 = 절단) 잘려도 조용히
+#      그럴듯한 숫자를 냈다. 하루 이상 가동하면 경고 수치가 허위로 커진다.
+#   2) 창 양끝에 걸친 포지션의 **진입 수수료**가 편향을 만든다. 아직 안 닫힌
+#      포지션의 수수료는 거래소 income 에만 있고 원장에는 없다(실측 -1.1235).
+#      그래서 재시작 직후엔 **항상** 같은 방향으로 경보가 떴다 — 08-28 브리핑
+#      5회가 전부 그랬다.
+#   3) 스칼라 하나라 무엇이 틀렸는지 알 수 없다. 심볼 단위로 쪼개면 즉시 보인다:
+#      실측 19심볼 중 18개가 0.01 이내 일치했고 1건만 어긋났다.
+#
+# 그래서 (a) 창을 6시간으로 고정해 절단을 피하고(1회 호출), (b) 경계 잡음의
+# 근원인 수수료를 **경보에서 빼고** REALIZED_PNL 만 **심볼 단위**로 대조한다.
+# 누적 전수 대조는 이 함수가 아니라 scripts/reconcile_realized_pnl.py 의 몫이다.
+CHK_WINDOW_SEC = 6 * 3600.0
+CHK_LIMIT = 1000
+CHK_SYMBOL_EPS = 0.05
+
+
+def ledger_vs_exchange_report(income_rows, ledger_lines, since: float,
+                              now_ts: float, limit: int = CHK_LIMIT) -> dict:
+    """거래소 수입내역과 원장을 대조한다. 순수 함수 — I/O 는 호출부가 한다.
+
+    `income_rows` 가 `limit` 행에 닿았으면 합계가 불완전하므로
+    **틀린 숫자 대신 `truncated=True`(판정 불가)** 를 낸다.
+    """
+    w_from = max(float(since), float(now_ts) - CHK_WINDOW_SEC)
+    rows = list(income_rows or [])
+    ex_pnl: dict = collections.defaultdict(float)
+    ex_com = 0.0
+    for x in rows:
+        try:
+            kind = x.get("incomeType")
+            val = float(x.get("income", 0) or 0)
+        except Exception:
+            continue
+        if kind == "REALIZED_PNL":
+            ex_pnl[str(x.get("symbol") or "")] += val
+        elif kind == "COMMISSION":
+            ex_com += val
+    led_pnl: dict = collections.defaultdict(float)
+    led_com = 0.0
+    for ln in (ledger_lines or []):
+        if not str(ln).strip():
+            continue
+        try:
+            r = json.loads(ln)
+        except Exception:
+            continue
+        if r.get("dry_run") or float(r.get("exited_at", 0) or 0) < w_from:
+            continue
+        led_pnl[str(r.get("symbol") or "")] += float(r.get("real_realized_pnl", 0) or 0)
+        led_com += float(r.get("real_commission", 0) or 0)
+    # 08-21 실패 모드: 거래소엔 청산이 있는데 원장에 그 심볼이 아예 없다.
+    missing = sorted(s for s in ex_pnl if s and s not in led_pnl)
+    mismatch = []
+    for s in sorted(set(ex_pnl) | set(led_pnl)):
+        diff = ex_pnl.get(s, 0.0) - led_pnl.get(s, 0.0)
+        if abs(diff) > CHK_SYMBOL_EPS:
+            mismatch.append((s, ex_pnl.get(s, 0.0), led_pnl.get(s, 0.0), diff))
+    mismatch.sort(key=lambda t: -abs(t[3]))
+    return {
+        "truncated": len(rows) >= limit,
+        "window_h": max(0.0, (float(now_ts) - w_from) / 3600.0),
+        "missing": missing,
+        "mismatch": mismatch,
+        "exch_pnl": sum(ex_pnl.values()),
+        "led_pnl": sum(led_pnl.values()),
+        # 수수료는 경계 편향 때문에 경보에 쓰지 않는다. 참고용으로만 돌려준다.
+        "exch_com": ex_com,
+        "led_com": -led_com,
+    }
 
 
 def stop_ws(proc) -> None:
@@ -1710,6 +1817,10 @@ def main() -> int:
     # 한계: 저유동성 시간대는 3분봉당 후보 p10 이 2개라 여유가 얇다.
     p.add_argument("--cm-flip-max-bars", type=int, default=-1,
                    help="HullMA 방향 전환 후 이 봉수 이내의 신호만 받는다. -1=제한없음")
+    p.add_argument("--cm-recheck-on-entry", action="store_true",
+                   help="지정가 발주 직전에 CM 방향/4h/flip을 재확인한다")
+    p.add_argument("--same-side-stop-cooldown-sec", type=float, default=0.0,
+                   help="최근 같은 방향 STOP_EXCHANGE 횟수가 2건 이상이면 신규 진입을 잠시 막는다")
     p.add_argument("--stop-fixed-roe", type=float, default=0.0,
                    help="손절을 진입가 기준 고정 ROE%%로 둔다(EMA25 무시). 0=사용안함")
     p.add_argument("--giveback-arm-roe", type=float, default=0.0,
@@ -1793,6 +1904,10 @@ def main() -> int:
     # 1분봉을 합쳐서 만들므로 WS 캐시를 그대로 쓴다(추가 API 호출 없음).
     p.add_argument("--signal-tf-min", type=int, default=15,
                    help="CM 신호 판정 봉 길이(분). 기본 15분")
+    p.add_argument("--confirm-tf-min", type=int, default=0,
+                   help="추가 CM 방향 확인 봉 길이(분). 0이면 사용 안 함")
+    p.add_argument("--entry-tf-min", type=int, default=0,
+                   help="눌림 실행용 봉 길이(분). 0이면 신호 봉 사용")
     p.add_argument("--cm-use-alt-resolution", action="store_true",
                    help="TradingView CM의 Use Current Chart Resolution?을 끄고 res_custom을 security()로 투영")
     p.add_argument("--cm-res-custom", type=str, default="D",
@@ -1847,6 +1962,10 @@ def main() -> int:
                    help="채택 포지션 손절폭 상한(ROE%%). 0=상한 없음")
     p.add_argument("--max-leg-margin", type=float, default=0.0,
                    help="1차당 증거금 상한(USDT). 0=상한 없음. min 과 같게 두면 고정 크기")
+    p.add_argument("--max-new-orders-per-cycle", type=int, default=0,
+                   help="한 스캔 사이클 신규 진입 발주 상한. 0=무제한")
+    p.add_argument("--adopt-unowned-positions", action="store_true", default=False,
+                   help="상태파일에 없는 계좌 포지션도 채택. 기본값은 수동 포지션 보호를 위해 비활성")
     p.add_argument("--max-exposure", type=float, default=0.95)
     p.add_argument("--min-notional", type=float, default=5.0)
     p.add_argument("--poll", type=float, default=10.0)
@@ -1909,6 +2028,10 @@ def main() -> int:
                    help="CM 최대익절선에서 앞당길 폭(가격 %%). 0.5~0.7 이 최적 구간")
     p.add_argument("--cm-tp-max-roe", type=float, default=0.0,
                    help="CM 익절선이 이 ROE(%%)보다 멀면 여기서 끊는다. 0이면 끔. 권장 6")
+    p.add_argument("--cm-invalid-tp-size-mult", type=float, default=1.0,
+                   help="CM TP 무효 거래 증거금 배율. 기본 1.0=기존 동작")
+    p.add_argument("--cm-invalid-tp-min-margin", type=float, default=0.0,
+                   help="CM TP 무효 거래 전용 증거금 하한. 0=일반 하한")
     p.add_argument("--bar-align", action="store_true", default=True,
                    help="매 분 00초 직후에 스캔한다. e1 실측: 진입 지연이 5초를 넘으면 "
                         "우위가 사라졌다(0초 +0.0750%%, 5초 -0.0079%%, 30초 -0.0997%%).")
@@ -2015,7 +2138,16 @@ def main() -> int:
     tg = None if args.no_telegram else Tg(cfg)
 
     def say(msg, tg_send=True):
-        print(msg, flush=True)
+        # Hidden Start-Process may expose an invalid stdout handle. Logging and
+        # Telegram must remain alive even when console output is unavailable.
+        try:
+            try:
+                print(msg, flush=True)
+            except UnicodeEncodeError:
+                # Windows cp949 콘솔에서 거래소 심볼의 비ASCII 표시명이 봇을 죽이지 않게 한다.
+                print(str(msg).encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+        except OSError:
+            pass
         log_line(str(msg))          # [2026-08-25] 런처와 무관하게 파일에도 남긴다
         if tg and tg_send:
             tg.send(f"[{VERSION}] {msg}")
@@ -2377,9 +2509,11 @@ def main() -> int:
             if _skip:
                 say("채택 제외(e2 소유 아님): " + ", ".join(_skip)
                     + " - 다른 봇이나 수동 포지션이면 그쪽에서 관리하세요")
+        elif _live and args.adopt_unowned_positions:
+            say(f"상태파일 없음 - 계좌 포지션 {len(_live)}건을 명시적 옵션으로 채택합니다")
         elif _live:
-            # 상태파일이 없는 첫 기동이다. 버리는 쪽이 더 위험하므로 전부 채택하되 알린다.
-            say(f"상태파일 없음 - 계좌 포지션 {len(_live)}건을 전부 e2 것으로 채택합니다")
+            say(f"수동 포지션 보호: 상태파일 미소유 계좌 포지션 {len(_live)}건 채택 제외")
+            _live = []
         _adopted = 0
         _sl_ok = 0
         _sl_fail = 0
@@ -2516,7 +2650,7 @@ def main() -> int:
                                           # [2026-08-26] 8/25 에 "손절선통과" 키 누락으로
                                           # 사이클 전체가 죽은 사고가 있었다. defaultdict 라
                                           # KeyError 는 안 나지만 방어적으로 전부 채운다.
-                                          "눌림과다": 0, "방향편중": 0,
+                                          "눌림과다": 0, "추격진입차단": 0, "방향편중": 0,
                                           "진입우위부족(축소)": 0})
     # [2026-08-25 안3 판정용] 손절 하한을 둘지 결정하려면 "근접손절로 몇 %를 버리는지"를
     # 실측해야 한다. 캐시 시뮬은 93% 를 버린다고 나왔지만 라이브와 대조된 적이 없다.
@@ -2530,6 +2664,7 @@ def main() -> int:
     _lt0 = time.localtime()
     last_slot = (_lt0.tm_hour, 0 if _lt0.tm_min < 30 else 30)
     side_stat = {"LONG": [0, 0, 0.0], "SHORT": [0, 0, 0.0]}   # 건수, 승, 순익
+    stop_history = {"LONG": [], "SHORT": []}
     why_stat: dict[str, list] = {}
     # [2026-08-20] 최근 1시간 롤링 집계용. (청산시각, 방향, 순손익, 명목)
     # 재시작이 잦아서(프로세스 정리·패치) 원장에서 복원한다. 안 하면 재시작 직후
@@ -2548,6 +2683,9 @@ def main() -> int:
                 continue
             recent.append((_r["exited_at"], _r["side"],
                            _r.get("real_net", 0.0), _r.get("nominal", 0.0)))
+            if (_r.get("exit_reason") == "STOP_EXCHANGE"
+                    and _r.get("side") in stop_history):
+                stop_history[_r["side"]].append(float(_r["exited_at"]))
             if _r.get("entered_at", 0) >= _cut:
                 entries.append((_r["entered_at"], _r["side"]))
         recent.sort()
@@ -2671,33 +2809,27 @@ def main() -> int:
         return n
 
     def ledger_vs_exchange(since: float):
-        """원장 합계와 거래소 수입내역을 대조한다.
+        """원장과 거래소를 대조한다(I/O 담당). 판정은 ledger_vs_exchange_report.
 
-        [2026-08-21] 오늘 손실 19건이 원장에서 빠져 승률이 14%p 부풀었는데
-        몇 시간 뒤에야 발견했다. 브리핑마다 대조하면 몇 분 안에 잡힌다.
-        반환: (원장합, 거래소합, 차이) / 조회 실패면 None
+        조회/읽기 실패면 None. 성공하면 report dict.
         """
         if args.dry_run:
             return None
+        now_ = time.time()
+        w_from = max(float(since), now_ - CHK_WINDOW_SEC)
         try:
             inc = ex.client.futures_income_history(
-                startTime=int(since * 1000), limit=1000)
+                startTime=int(w_from * 1000), limit=CHK_LIMIT)
         except Exception:
             return None
-        exch = sum(float(x.get("income", 0) or 0) for x in inc
-                   if x.get("incomeType") in ("REALIZED_PNL", "COMMISSION"))
-        led = 0.0
         try:
-            for ln in LEDGER.read_text(encoding="utf-8").splitlines():
-                if not ln.strip():
-                    continue
-                r = json.loads(ln)
-                if r.get("dry_run") or r.get("exited_at", 0) < since:
-                    continue
-                led += float(r.get("real_net", 0) or 0)
+            lines_ = LEDGER.read_text(encoding="utf-8").splitlines()
         except Exception:
             return None
-        return led, exch, exch - led
+        try:
+            return ledger_vs_exchange_report(inc, lines_, since, now_)
+        except Exception:
+            return None
 
     def brief_text(bal):
         _f, _t, _lbl = hour_window()
@@ -2732,12 +2864,26 @@ def main() -> int:
         # 발견했다. 브리핑마다 대조해 맨 위에 알린다.
         chk = ledger_vs_exchange(run_started_at)
         if chk is not None:
-            _led, _exc, _gap = chk
-            if abs(_gap) > 0.05:
-                lines.insert(1, f"[경고] 원장과 거래소 불일치 {_gap:+.4f} "
-                                f"(원장{_led:+.4f} 거래소{_exc:+.4f}) - 집계를 믿지 말 것")
+            _w = chk["window_h"]
+            if chk["truncated"]:
+                # 잘린 합계로 만든 숫자는 내지 않는다.
+                lines.insert(1, f"[주의] 정합성 판정 불가 - 거래소 내역이 {CHK_LIMIT}행에서 "
+                                f"잘렸다(최근 {_w:.1f}h). 전수 대조는 "
+                                f"scripts/reconcile_realized_pnl.py")
+            elif chk["missing"]:
+                _m = chk["missing"]
+                lines.insert(1, f"[경고] 원장 누락 의심 {len(_m)}건 "
+                                f"({', '.join(_m[:4])}{'...' if len(_m) > 4 else ''}) - "
+                                f"거래소엔 청산이 있는데 원장에 없다(최근 {_w:.1f}h) "
+                                f"- 집계를 믿지 말 것")
+            elif chk["mismatch"]:
+                _s, _e, _l, _d = chk["mismatch"][0]
+                lines.insert(1, f"[주의] 실현손익 불일치 {len(chk['mismatch'])}건 - "
+                                f"최대 {_s} 거래소{_e:+.4f} 원장{_l:+.4f} 차이{_d:+.4f} "
+                                f"(최근 {_w:.1f}h)")
             else:
-                lines.append(f"  정합성 OK (거래소 대비 {_gap:+.4f})")
+                lines.append(f"  정합성 OK (최근 {_w:.1f}h 실현손익 심볼단위 일치, "
+                             f"거래소{chk['exch_pnl']:+.4f})")
         return "\n".join(lines)
 
     def config_diag_text() -> str:
@@ -3424,7 +3570,7 @@ def main() -> int:
             # 즉시 가져오되, 주문에 담긴 진입 맥락(손절/legs/CM목표)을 그대로 살린다.
             # 그러면 보호 지연이 75초+ -> 15초로 줄고, `CM 익절선 무효` 폴백과
             # 계측 공백(진입 로그 누락)도 함께 사라진다. 진입 판정은 건드리지 않는다.
-            if _owned and sm not in _owned:
+            if (not args.adopt_unowned_positions and sm not in _owned):
                 continue          # 다른 봇/수동 포지션은 건드리지 않는다
             sd = (_eo.get("side") if _eo else None) or ("LONG" if amt > 0 else "SHORT")
             ep = float(p.get("entryPrice") or 0)
@@ -3615,6 +3761,9 @@ def main() -> int:
                            exit_price=fill["exit_price"],
                            quantity=fill["quantity"],
                            tp_limit_price=pos.tp_limit_price,
+                           tp_order_placed_at=pos.tp_order_placed_at,
+                           tp_wait_sec=(time.time() - pos.tp_order_placed_at
+                                        if pos.tp_order_placed_at > 0 else None),
                            exit_reason=_reason, entered_at=pos.entered_at,
                            exited_at=time.time(), leverage=pos.leverage,
                            roe_pct=fill["roe_pct"], nominal=nominal,
@@ -3631,6 +3780,8 @@ def main() -> int:
         ss[1] += 1 if net > 0 else 0
         ss[2] += net
         recent.append((time.time(), pos.side, net, nominal))
+        if _reason == "STOP_EXCHANGE" and args.same_side_stop_cooldown_sec > 0:
+            stop_history[pos.side].append(time.time())
         ws_ = why_stat.setdefault(_reason, [0, 0.0])
         ws_[0] += 1
         ws_[1] += net
@@ -3881,6 +4032,8 @@ def main() -> int:
                 ss[1] += 1 if net > 0 else 0
                 ss[2] += net
                 recent.append((time.time(), pos.side, net, nominal))
+                if why == "STOP_EXCHANGE" and args.same_side_stop_cooldown_sec > 0:
+                    stop_history[pos.side].append(time.time())
                 ws_ = why_stat.setdefault(why, [0, 0.0])
                 ws_[0] += 1
                 ws_[1] += net
@@ -4049,10 +4202,15 @@ def main() -> int:
                 _scan_order = symbols[scan_offset:] + symbols[:scan_offset]
                 # 다음 사이클은 이번에 뒷줄이었던 곳부터 시작한다.
                 scan_offset = (scan_offset + max(1, len(symbols) // 3)) % len(symbols)
+            new_orders_this_cycle = 0
             for sym in _scan_order:
                 if time.time() > deadline:
                     break
                 if args.ws and not ws_ready:
+                    continue
+                if (args.max_new_orders_per_cycle > 0
+                        and new_orders_this_cycle >= args.max_new_orders_per_cycle):
+                    skips["사이클발주상한"] += 1
                     continue
                 if sym in positions:
                     # e3 CM은 1슬롯 1회 진입만 허용한다. 기존 e2의 분할 재진입
@@ -4066,9 +4224,19 @@ def main() -> int:
                 try:
                     df = signal_bars(ex, sym, args.signal_tf_min)
                     cm_sig = cm_signal_snapshot(ex, sym, args, chart_df=df)
+                    if args.confirm_tf_min > 0:
+                        confirm_df = signal_bars(ex, sym, args.confirm_tf_min)
+                        confirm_sig = cm_signal_snapshot(ex, sym, args, chart_df=confirm_df)
+                        if (not confirm_sig or not confirm_sig.get("signal") or
+                                confirm_sig["signal"] != cm_sig.get("signal")):
+                            skips["확인봉불일치"] += 1
+                            pending.pop(sym, None)
+                            continue
+                    entry_df = (signal_bars(ex, sym, args.entry_tf_min)
+                                if args.entry_tf_min > 0 else df)
                 except Exception:
                     continue
-                ind = indicators(df)
+                ind = indicators(entry_df)
                 if not ind or not cm_sig:
                     continue
                 L = cm_sig["signal"] == "LONG"
@@ -4110,6 +4278,15 @@ def main() -> int:
                         skips["전환경과"] += 1
                         pending.pop(sym, None)
                         continue
+                if args.same_side_stop_cooldown_sec > 0:
+                    _now = time.time()
+                    _hist = [t for t in stop_history[side]
+                             if _now - t <= args.same_side_stop_cooldown_sec]
+                    stop_history[side] = _hist
+                    if len(_hist) >= 2:
+                        skips["동일방향연속손절"] += 1
+                        pending.pop(sym, None)
+                        continue
                 # [2026-08-26 개선④] 같은 방향 편중 제한.
                 # 크립토는 BTC 에 동조하므로 같은 방향 7슬롯은 분산이 아니라 한 베팅의
                 # 7배 레버리지다. 실제로 오늘 아침 7슬롯이 전부 SHORT 였다.
@@ -4136,7 +4313,11 @@ def main() -> int:
                                     "sig_close": float(df["close"].iloc[-1])}
                     n_align += 1
                 pd = pending[sym]
-                if pd["side"] != side or time.time() - pd["since"] > 3600:
+                # A pending CM signal is only valid for the entry TTL. Previously
+                # this was 3600s, allowing stale signals to become late chase entries.
+                if pd["side"] != side or time.time() - pd["since"] > args.entry_order_ttl_sec:
+                    if time.time() - pd["since"] > args.entry_order_ttl_sec:
+                        skips["신호노후"] += 1
                     pending.pop(sym, None)
                     continue
                 # CM이 방향을 정하면, 실제 체결은 기존 EMA 눌림 진입선을 사용한다.
@@ -4265,21 +4446,18 @@ def main() -> int:
                 # [2026-08-26] 진입 우위(신호봉 종가 대비)가 부족하면 크기를 줄인다.
                 # **차단하지 않는다** - 차단하면 통과율 35%로 거래수가 65% 줄어
                 # 원칙 1(시간당 14건 하한)을 위반한다.
-                # 원장 111건: edge>=0.3% 39건 건당+0.7242 / edge<0.3% 72건 -0.2274.
-                # 배율 0.3 이면 거래수 100% 유지하며 차단 효과의 70%를 얻는다
-                # (합계 +11.87 -> +23.33, 차단은 +28.24 이지만 39건만 남는다).
-                # 구간 교차검증 3/3 개선, 심볼 반분 A/B 격차 0.0108.
+                # 변형-초스캘프 원칙 3: 신호봉 종가 대비 최소 우위가 없으면
+                # 추격 진입으로 간주해 주문 자체를 차단한다.
                 if args.min_entry_edge_pct > 0:
                     _sc = float(pd.get("sig_close") or 0.0)
                     if _sc > 0:
                         _edge = ((_sc - entry) / _sc * 100.0) if L else ((entry - _sc) / _sc * 100.0)
                         if _edge < args.min_entry_edge_pct:
-                            _b4 = margin
-                            margin = margin * max(0.0, args.entry_edge_size_mult)
-                            log_line(f"진입우위 부족 크기축소 {sym} {side}: "
-                                     f"우위{_edge:+.3f}% < {args.min_entry_edge_pct:.2f}% "
-                                     f"-> 증거금 {_b4:.2f} -> {margin:.2f}")
-                            skips["진입우위부족(축소)"] += 1
+                            log_line(f"추격 진입 차단 {sym} {side}: "
+                                     f"우위{_edge:+.3f}% < {args.min_entry_edge_pct:.2f}%")
+                            skips["추격진입차단"] += 1
+                            pending.pop(sym, None)
+                            continue
                 # [2026-08-26] 상위추세 역행이면 크기를 줄인다(차단하지 않음 - 원칙 1).
                 if _htf_counter and args.cm_htf_counter_mult > 0:
                     _before = margin
@@ -4287,6 +4465,18 @@ def main() -> int:
                     log_line(f"상위추세 역행 크기축소 {sym} {side}: "
                              f"{_before:.2f} -> {margin:.2f} "
                              f"(x{args.cm_htf_counter_mult})")
+                # CM TP가 무효한 거래는 방향 신호는 유효하지만 익절 구조가 폴백으로
+                # 바뀐다. 기본값은 1.0/0이라 기존 라이브 동작과 완전히 같다.
+                _cm_tp_valid = cm_tp_price(
+                    ind, entry, side, args.cm_tp_pullback_pct,
+                    args.leverage, args.cm_tp_max_roe) > 0
+                if (not _cm_tp_valid and args.cm_invalid_tp_size_mult > 0
+                        and args.cm_invalid_tp_size_mult < 1.0):
+                    _before = margin
+                    margin = margin * args.cm_invalid_tp_size_mult
+                    log_line(f"CM TP 무효 크기축소 {sym} {side}: "
+                             f"{_before:.2f} -> {margin:.2f} "
+                             f"(x{args.cm_invalid_tp_size_mult})")
                 # [2026-08-26 P0] **축소배율은 하한 아래로 내려갈 수 없다.**
                 # 종전엔 하한을 먼저 적용하고 그 뒤에 배율을 곱해서, 배율이 겹치면
                 # 증거금이 9 USDT 대까지 떨어졌다(실측 21:36 REUSDT 31.96 -> 9.59).
@@ -4297,11 +4487,14 @@ def main() -> int:
                 # 들어갈 거면 하한은 지킨다.
                 # 하한이 배율보다 커서 축소가 무력해지는 잔고대가 있다는 것은
                 # 감수한다 - 그건 하한/상한을 조정할 문제지 슬롯을 낭비할 이유가 아니다.
-                if margin < args.min_leg_margin:
+                _margin_floor = args.min_leg_margin
+                if (not _cm_tp_valid and args.cm_invalid_tp_min_margin > 0):
+                    _margin_floor = min(_margin_floor, args.cm_invalid_tp_min_margin)
+                if margin < _margin_floor:
                     if abs(margin - _pre_mult) > 1e-9:
                         log_line(f"축소 하한 적용 {sym}: {margin:.2f} -> "
-                                 f"{args.min_leg_margin:.2f} (최소 증거금)")
-                    margin = args.min_leg_margin
+                                 f"{_margin_floor:.2f} (최소 증거금)")
+                    margin = _margin_floor
                 # [2026-08-25] 잔고가 줄수록 건당 크기가 커지는 피드백을 상한으로 끊는다.
                 if args.max_leg_margin > 0:
                     # _new_legs 는 "한 봉에서 여러 차수 목표를 동시에 터치"한 경우를 위한
@@ -4332,6 +4525,20 @@ def main() -> int:
                     # [2026-08-25 B안] 신규 진입은 주문만 내고 넘어간다(블로킹 0).
                     # 추가 차수(2·3차)는 기존 동기 경로를 그대로 둔다 — tranches=1이면 안 탄다.
                     if sym not in positions:
+                        if args.cm_recheck_on_entry:
+                            _latest_cm = cm_signal_snapshot(ex, sym, args)
+                            _cm_ok = bool(_latest_cm and _latest_cm.get("signal") == side)
+                            if _cm_ok and args.cm_htf_filter:
+                                _cm_htf = htf_uptrend(ex, sym, args.cm_htf_interval, args.cm_htf_ema)
+                                _cm_ok = _cm_htf is not None and _cm_htf == (side == "LONG")
+                            if _cm_ok and args.cm_flip_max_bars >= 0:
+                                _cm_age = flip_age(signal_bars(ex, sym, args.signal_tf_min),
+                                                    args.signal_tf_min, side == "LONG")
+                                _cm_ok = _cm_age is not None and _cm_age <= args.cm_flip_max_bars
+                            if not _cm_ok:
+                                say(f"진입 직전 CM 재확인 실패 {sym} {side} - 지정가 미발주")
+                                pending.pop(sym, None)
+                                continue
                         try:
                             ex.set_leverage(sym, args.leverage)
                             _oid, _px = place_limit_entry_nowait(ex, sym, side, qty)
@@ -4347,8 +4554,12 @@ def main() -> int:
                             "bb_target": (ind["bb_u"] if L else ind["bb_l"]),
                             "cm_target": (ind.get("cm_tp_long") if L else ind.get("cm_tp_short")) or 0.0,
                             "since_id": _since_id, "legs": list(pd["legs"]),
-                            "placed_at": time.time(), "price": _px,
+                            "placed_at": time.time(), "signal_at": float(pd.get("since") or time.time()),
+                            "price": _px,
                         }
+                        say(f"진입주문 발주 {sym} {side} 신호후{time.time() - entry_orders[sym]['signal_at']:.1f}s "
+                            f"TTL{args.entry_order_ttl_sec:.0f}s")
+                        new_orders_this_cycle += 1
                         # 주문을 낸 즉시 상태파일에 남긴다. 체결과 재시작 사이의 틈에서
                         # 무보호 고아 포지션이 생기는 것을 막는다(ONGUSDT 실사고).
                         # _owned 에도 넣어야 미추적 안전망이 이 심볼을 '우리 것'으로 본다.
@@ -4387,6 +4598,10 @@ def main() -> int:
                 # [2026-08-20 버그1] 손절주문은 아래 분기에서 sync_stop 으로만 건다.
                 # 여기서 미리 걸면 추가 진입 분기가 그것을 취소하지 않아 고아 주문이 남는다.
                 _ent_t = time.time()
+                _signal_at = float(_o.get("signal_at") or _o.get("placed_at") or _ent_t)
+                say(f"체결 지연 {_osym} {side} 신호->발주{float(_o.get('placed_at') or _ent_t) - _signal_at:.1f}s "
+                    f"발주->체결{_ent_t - float(_o.get('placed_at') or _ent_t):.1f}s "
+                    f"총{_ent_t - _signal_at:.1f}s")
                 if sym in positions:
                     # 2·3차: 기존 포지션에 합산하고 손절/익절선을 평단 기준으로 갱신
                     _p = positions[sym]
