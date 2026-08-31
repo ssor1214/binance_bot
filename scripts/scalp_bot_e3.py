@@ -947,6 +947,32 @@ def _series_ma(values, volume_values, length: int, atype: int, factor_input: int
 # 앱에서 낸 BUY 11450(reduceOnly=False)이 봇의 SHORT 4404 를 덮고 LONG 7046 으로 뒤집었고,
 # 그 손익 -7.13/명목 622.93 이 봇 원장에 SHORT 로 기록됐다.
 _BOT_ORDER_PREFIX = "x-"
+# 진입 체결이 발견 시각보다 얼마나 앞설 수 있는가. 눌림 지정가 대기 +
+# 폴링 주기를 넉넉히 덮는다. since_trade_id 가 실제 경계를 잡으므로 넓어도 안전.
+WIDE_TRADE_LOOKBACK_MS = 6 * 60 * 60 * 1000   # 6시간
+
+
+def trades_start_ms(pos) -> int:
+    """체결 조회 startTime. **entered_at 은 실제 체결 시각이 아니다.**
+
+    [2026-09-01 P0 버그수정] 종전엔 `entered_at*1000 - 5000`(5초 버퍼)이었다.
+    그런데 주 진입 경로(안전망, 유입의 93%)는 Pos 를 만들 때 `entered_at=now_ts`,
+    즉 **폴링이 포지션을 발견한 시각**을 쓴다. 눌림 지정가는 수 분 대기 후 체결되고
+    발견은 그 다음 스캔이라, 진입 체결이 5초 창 **앞으로 빠진다.**
+    그러면 `tr` 에 청산 다리만 남아 `real_commission` 이 **한쪽 다리만** 기록된다.
+
+    실측(원장 1,017건): 377건(37%)이 한 다리만 기록됐고 그중 345건이
+    realizedPnl != 0 — 즉 빠진 쪽이 진입 다리다. 왕복 수수료율 0.0408% -> 0.0511%,
+    순손익 -169.30 -> -185.46 으로 **원장이 9.5% 낙관 편향**돼 있었다.
+
+    이 포지션의 체결만 고르는 **진짜 필터는 `since_trade_id`** 이고, 그것은 진입 주문
+    을 내기 **전**에 잡히므로(4520행) 창을 넓혀도 이전 포지션이 섞이지 않는다.
+    그래서 since_trade_id 가 있을 때만 넓게 잡고, 없으면 (dry-run·조회실패) 종전대로
+    좁게 둔다 — 필터가 없는 상태에서 창까지 넓히면 이전 포지션이 섞이기 때문이다.
+    """
+    if getattr(pos, "since_trade_id", 0):
+        return int(pos.entered_at * 1000) - WIDE_TRADE_LOOKBACK_MS
+    return int(pos.entered_at * 1000) - 5000
 
 
 def manual_order_ids(ex, symbol: str, start_ms: int) -> set:
@@ -3667,10 +3693,11 @@ def main() -> int:
         fill = None
         tr = []          # 조회가 예외로 빠져도 아래 라벨 판정이 참조하므로 미리 둔다
         try:
-            _st_ms = int(pos.entered_at * 1000) - 5000
+            _st_ms = trades_start_ms(pos)
 
             def _fetch():
-                _t = ex.client.futures_account_trades(symbol=sym, startTime=_st_ms)
+                _t = ex.client.futures_account_trades(
+                        symbol=sym, startTime=_st_ms, limit=1000)
                 if pos.since_trade_id:
                     _t = [x for x in _t if int(x.get("id", 0)) > pos.since_trade_id]
                 return _t
@@ -3985,8 +4012,9 @@ def main() -> int:
                         say(f"청산실패 {sym}: {e}")
                         continue
                     time.sleep(1.0)
-                    _st_ms = int(pos.entered_at * 1000) - 5000
-                    tr = ex.client.futures_account_trades(symbol=sym, startTime=_st_ms)
+                    _st_ms = trades_start_ms(pos)
+                    tr = ex.client.futures_account_trades(
+                        symbol=sym, startTime=_st_ms, limit=1000)
                     # [버그3] 진입 직전 체결 id 이후만 이 포지션 것으로 본다.
                     # 같은 심볼을 반복 거래하면 이전 포지션 체결이 섞여 순손익이 오염된다.
                     if pos.since_trade_id:
