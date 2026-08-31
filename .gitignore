@@ -71,3 +71,4 @@ logs/*.migrated_*
 scratch_edge_*.npz
 logs/edge_lab_*.txt
 logs/edge_fetch_*.out
+scratch_funding*.npz
