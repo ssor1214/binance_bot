@@ -99,24 +99,53 @@ def roll_mean_std(a, w):
 
 
 # ---------------------------------------------------------------- 패널 적재
-def load_panel(path, interval):
-    z = np.load(ROOT / path, allow_pickle=True)
-    syms = [str(x) for x in z["__symbols__"]]
+def load_panel(paths, interval, end_date="", start_date=""):
+    """여러 npz 를 하나의 T x S 패널로 합친다.
+
+    생존편향 측정 때 '살아남은 심볼' 캐시와 '상장폐지 심볼' 캐시를 같은 시간축에
+    올려야 하기 때문에 여러 경로를 받는다. 심볼이 겹치면 처음 것이 이긴다.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    zs, syms, owner = [], [], {}
+    for path in paths:
+        z = np.load(ROOT / path, allow_pickle=True)
+        zs.append(z)
+        for x in z["__symbols__"]:
+            s = str(x)
+            if s not in owner:
+                owner[s] = z
+                syms.append(s)
     tset = set()
     for s in syms:
-        tset |= set(z[f"{s}|{interval}"][:, 0].astype(np.int64).tolist())
+        tset |= set(owner[s][f"{s}|{interval}"][:, 0].astype(np.int64).tolist())
     times = sorted(tset)
+    import datetime as _dt
+
+    def _ms(d):
+        return _dt.datetime.strptime(d, "%Y-%m-%d").replace(
+            tzinfo=_dt.timezone.utc).timestamp() * 1000
+
+    if start_date:
+        times = [t for t in times if t >= _ms(start_date)]
+    if end_date:
+        times = [t for t in times if t < _ms(end_date)]
     T, S = len(times), len(syms)
     idx = {t: i for i, t in enumerate(times)}
     P = {k: np.full((T, S), np.nan) for k in "ohlcv"}
     for j, s in enumerate(syms):
-        b = z[f"{s}|{interval}"]
-        rows = np.array([idx[t] for t in b[:, 0].astype(np.int64).tolist()])
+        b = owner[s][f"{s}|{interval}"]
+        keep = [(i, idx[t]) for i, t in enumerate(b[:, 0].astype(np.int64).tolist())
+                if t in idx]
+        if not keep:
+            continue
+        src = np.array([k[0] for k in keep])
+        rows = np.array([k[1] for k in keep])
         for k, col in zip("ohlcv", range(1, 6)):
-            P[k][rows, j] = b[:, col]
+            P[k][rows, j] = b[src, col]
     P["t"] = np.asarray(times, dtype=np.int64)
     P["syms"] = syms
-    P["h4"] = {s: z[f"{s}|4h"] for s in syms}
+    P["h4"] = {s: owner[s][f"{s}|4h"] for s in syms}
     return P
 
 
@@ -151,14 +180,16 @@ def build_indicators(P):
         ind["bbl"][:, j] = m - 2 * sd
         # 4시간 EMA200: **마감된** 상위봉만 쓴다 (lookahead 없음)
         b4 = P["h4"][s]
-        t4 = b4[:, 0].astype(np.int64)
-        e4 = ema(b4[:, 4], 200)
-        close4 = t4 + 4 * 3600_000          # 상위봉 마감 시각
-        pos = np.searchsorted(close4, P["t"], side="right") - 1
-        good = pos >= 200
-        val = np.where(good, e4[np.clip(pos, 0, len(e4) - 1)], np.nan)
-        ind["htf"][:, j] = (cf > val).astype(float)
-        ind["htf"][np.isnan(val), j] = np.nan
+        if len(b4) >= 210:
+            t4 = b4[:, 0].astype(np.int64)
+            e4 = ema(b4[:, 4], 200)
+            close4 = t4 + 4 * 3600_000          # 상위봉 마감 시각
+            pos = np.searchsorted(close4, P["t"], side="right") - 1
+            good = pos >= 200
+            val = np.where(good, e4[np.clip(pos, 0, len(e4) - 1)], np.nan)
+            ind["htf"][:, j] = (cf > val).astype(float)
+            ind["htf"][np.isnan(val), j] = np.nan
+        # else: 상위봉이 없는 심볼(상폐분)은 htf 를 NaN 으로 둔다 — 4h 필터 계열만 빠진다
         for k in keys:
             ind[k][~ok, j] = np.nan
     return ind
@@ -280,6 +311,11 @@ def stats(sig, fwd):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--cache", default="scratch_edge_3m_30d.npz")
+    p.add_argument("--extra-cache", default="",
+                   help="함께 합칠 npz(쉼표 구분). 상장폐지 심볼 캐시 등")
+    p.add_argument("--end-date", default="", help="YYYY-MM-DD 이후 봉은 버린다")
+    p.add_argument("--start-date", default="", help="YYYY-MM-DD 이전 봉은 버린다")
+    p.add_argument("--drop-symbols", default="", help="제외할 심볼(쉼표 구분)")
     p.add_argument("--interval", default="3m")
     p.add_argument("--horizons", default="5,20,40,80")
     p.add_argument("--raw", action="store_true", help="드리프트 중립화 전 값도 함께 출력")
@@ -291,7 +327,16 @@ def main():
     a = p.parse_args()
     hor = [int(x) for x in a.horizons.split(",")]
 
-    P = load_panel(a.cache, a.interval)
+    caches = [a.cache] + [x for x in a.extra_cache.split(",") if x]
+    P = load_panel(caches, a.interval, a.end_date, a.start_date)
+    if a.drop_symbols:
+        drop = {x.strip().upper() for x in a.drop_symbols.split(",") if x.strip()}
+        keepj = [j for j, s in enumerate(P["syms"]) if s not in drop]
+        if len(keepj) < len(P["syms"]):
+            print(f"(제외 {len(P['syms']) - len(keepj)}심볼)")
+            for k in "ohlcv":
+                P[k] = P[k][:, keepj]
+            P["syms"] = [P["syms"][j] for j in keepj]
     T, S = P["c"].shape
     bar_min = int(a.interval[:-1]) * (60 if a.interval.endswith("h") else 1)
     days = T * bar_min / 1440.0

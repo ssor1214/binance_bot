@@ -72,3 +72,6 @@ scratch_edge_*.npz
 logs/edge_lab_*.txt
 logs/edge_fetch_*.out
 scratch_funding*.npz
+scratch_symbol_universe.json
+scratch_delisted_in_window.json
+scratch_equity_perps.txt
