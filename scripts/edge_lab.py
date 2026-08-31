@@ -431,6 +431,10 @@ def main():
     p.add_argument("--interval", default="3m")
     p.add_argument("--horizons", default="5,20,40,80")
     p.add_argument("--raw", action="store_true", help="드리프트 중립화 전 값도 함께 출력")
+    p.add_argument("--phase-sweep", action="store_true",
+                   help="stride 의 전 위상을 돌려 평균·범위를 낸다(권장). 첫 horizon 기준")
+    p.add_argument("--stride-offset", type=int, default=0,
+                   help="stride 표본추출의 위상. 24시간 보유에서 '하루 중 몇 시에 진입하는가'")
     p.add_argument("--stride", type=int, default=1,
                    help="N봉마다 한 번만 표본추출 — 보유구간 겹침 제거용")
     p.add_argument("--detail", default="", help="이름에 이 문자열이 든 신호를 롱/숏·심볼별로 분해")
@@ -496,11 +500,40 @@ def main():
         with np.errstate(invalid="ignore"):
             FN[h] = F[h] - np.nanmean(F[h], axis=1, keepdims=True)
 
+    if a.stride > 1 and a.phase_sweep:
+        # **stride 표본추출에는 숨은 자유도가 있다.** keep[::stride] 는 항상 위상 0 을
+        # 고르는데, 24시간 보유에서 그건 "매일 특정 시각에만 진입"을 뜻한다.
+        # 위상에 따라 결과가 크게 갈리므로(실측 -0.04 ~ +0.15), 한 위상만 보고하면
+        # 자기도 모르게 stride 방향 탐색의 승자를 보고하게 된다.
+        # -> 전 위상을 돌려 **평균과 범위**를 함께 낸다. 판정은 평균으로 한다.
+        print(f"[위상 스윕] stride={a.stride} 의 {a.stride}개 위상을 모두 측정한다.")
+        print(f"{'신호':<30}{'위상평균|중앙값':>22}{'평균 시각t':>12}{'  위상 범위(평균)':>22}")
+        base = {k: v.copy() for k, v in SIG.items()}
+        h = hor[0]
+        for name in base:
+            ms, md, ts = [], [], []
+            for off in range(a.stride):
+                keep = np.zeros(T, dtype=bool)
+                keep[off::a.stride] = True
+                sg = np.where(keep[:, None], base[name], 0).astype(np.int8)
+                r = stats(sg, FN[h])
+                if r:
+                    ms.append(r[1])
+                    md.append(r[2])
+                    ts.append(r[3])
+            if not ms:
+                continue
+            print(f"{name:<30}{np.mean(ms):+10.4f}|{np.nanmean(md):+9.4f}"
+                  f"{np.mean(ts):+12.2f}   {min(ms):+.4f} ~ {max(ms):+.4f}")
+        print()
+        print("한 위상만 좋은 신호는 엣지가 아니라 위상 운이다. 판정은 위상평균으로 한다.")
+        print()
+
     if a.stride > 1:
         # 겹치는 보유구간은 서로 독립이 아니다. h봉 보유를 h봉 간격으로만 표본추출하면
         # 선행수익률이 거의 겹치지 않아 t 가 정직해진다. 건수는 stride 배로 줄어든다.
         keep = np.zeros(T, dtype=bool)
-        keep[::a.stride] = True
+        keep[a.stride_offset % a.stride::a.stride] = True
         for k in SIG:
             SIG[k] = np.where(keep[:, None], SIG[k], 0).astype(np.int8)
         print(f"(stride={a.stride}: {a.stride}봉마다 한 번만 표본추출해 보유구간 겹침을 제거)")
