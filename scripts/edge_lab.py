@@ -298,6 +298,26 @@ def signals(P, I, FRM=None, M=None):
     htf_up, htf_dn = I["htf"] == 1, I["htf"] == 0
     put("CM + 4h정합", cm_l & htf_up, cm_s & htf_dn)
 
+    # --- 원칙 0 "교차" (문서에는 있는데 코드에 없던 축) ----------------------
+    # CLAUDE.md 원칙 0 은 "HullMA20 방향/**교차**" 라고 적혀 있는데, 라이브 코드는
+    # 교차를 한 번도 쓰지 않는다. scalp_bot_e3 의 cr_up/cr_down/crossed 는 계산되어
+    # 반환 dict 에 담기기만 하고 **어디서도 소비되지 않는다**(각 2회 등장 = 정의+반환).
+    # 실제 규칙은 `ma_up and close > hma` 로 교차(event)가 아니라 상태(state)다.
+    # 그래서 "교차로 진입했다면 어땠는가"는 한 번도 측정된 적이 없다. 여기서 잰다.
+    #
+    # 원본 Pine 정의 그대로: cr_up = open < out1 and close > out1 (캔들이 MA 를 관통).
+    # out1 x out2 크로스(crossed)는 범위 밖이다 — 라이브가 doma2=False 라 두 번째
+    # MA 자체를 판정에 안 쓴다. 없는 축을 만들어 붙이지 않는다.
+    #
+    # 사전 등록: 아래 3개만 본다. 좋아 보이는 걸 더 찾아 붙이지 않는다.
+    O = P["o"]
+    cr_up = (O < I["hma"]) & (C > I["hma"])
+    cr_dn = (O > I["hma"]) & (C < I["hma"])
+    put("[교차] 관통 단독", cr_up, cr_dn)
+    put("[교차] 관통 + 방향정합", cr_up & up, cr_dn & dn)
+    put("[교차] 관통 + 방향 + 4h정합",
+        cr_up & up & (I["htf"] == 1), cr_dn & dn & (I["htf"] == 0))
+
     # --- 원칙 0 분해 (CM 을 구성요소로 쪼갠다) ------------------------------
     # CM 진입 규칙 = "HullMA20 기울기 방향" AND "종가가 HullMA 위/아래" 두 조건의 곱이다.
     # 이 둘을 한 번도 따로 재본 적이 없다. 그리고 네 번째 조합(기울기는 위인데 종가가
@@ -402,6 +422,37 @@ def signals(P, I, FRM=None, M=None):
     return S
 
 
+def vol_matrix(P, window):
+    """봉수익률의 이동 표준편차(분수 단위). 위험조정 측정에 쓴다."""
+    C = P["c"]
+    T, S = C.shape
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r = np.full((T, S), np.nan)
+        r[1:] = C[1:] / C[:-1] - 1.0
+    out = np.full((T, S), np.nan)
+    for j in range(S):
+        v = r[:, j]
+        ok = ~np.isnan(v)
+        if ok.sum() < window + 10:
+            continue
+        x = np.where(ok, v, 0.0)
+        n = ok.astype(float)
+        c1 = np.cumsum(np.insert(x, 0, 0.0))
+        c2 = np.cumsum(np.insert(x * x, 0, 0.0))
+        cn = np.cumsum(np.insert(n, 0, 0.0))
+        su = c1[window:] - c1[:-window]
+        sq = c2[window:] - c2[:-window]
+        cnt = cn[window:] - cn[:-window]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = su / cnt
+            var = np.maximum(sq / cnt - mu * mu, 0.0)
+        sd = np.sqrt(var)
+        sd[cnt < window * 0.5] = np.nan
+        # 창 합 c1[k+window]-c1[k] 은 x[k:k+window], 즉 인덱스 k+window-1 에서 끝난다.
+        out[window - 1:, j] = sd
+    return out
+
+
 # ---------------------------------------------------------------- 측정
 def forward(P, hor):
     C, O = P["c"], P["o"]
@@ -459,6 +510,9 @@ def main():
     p.add_argument("--interval", default="3m")
     p.add_argument("--horizons", default="5,20,40,80")
     p.add_argument("--raw", action="store_true", help="드리프트 중립화 전 값도 함께 출력")
+    p.add_argument("--vol-norm", type=int, default=0,
+                   help="N봉 이동변동성으로 나눠 위험조정 단위(sigma)로 측정한다. "
+                        "비용선 비교는 못 하지만 '정보가 있는가'는 훨씬 정확히 잰다")
     p.add_argument("--phase-sweep", action="store_true",
                    help="stride 의 전 위상을 돌려 평균·범위를 낸다(권장). 첫 horizon 기준")
     p.add_argument("--stride-offset", type=int, default=0,
@@ -532,6 +586,18 @@ def main():
     for h in hor:
         with np.errstate(invalid="ignore"):
             FN[h] = F[h] - np.nanmean(F[h], axis=1, keepdims=True)
+    if a.vol_norm:
+        # 위험조정: 각 관측을 그 심볼의 사전 변동성으로 나눈다(=동일 위험 사이징).
+        # **비용선과 직접 비교할 수 없다** — 비용도 같은 배율로 커지기 때문이다.
+        # 이 모드가 답하는 질문은 "이 신호에 정보가 있는가" 하나다.
+        VM = vol_matrix(P, a.vol_norm)
+        for h in hor:
+            with np.errstate(invalid="ignore", divide="ignore"):
+                denom = VM * math.sqrt(h) * 100.0
+                FN[h] = np.where(denom > 0, FN[h] / denom, np.nan)
+        print(f"위험조정 모드: {a.vol_norm}봉 이동변동성으로 나눔. "
+              f"단위는 %가 아니라 **sigma** 이고 비용선 비교 불가.")
+        print()
 
     if a.stride > 1 and a.phase_sweep:
         # **stride 표본추출에는 숨은 자유도가 있다.** keep[::stride] 는 항상 위상 0 을
