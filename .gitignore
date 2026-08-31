@@ -78,3 +78,5 @@ scratch_equity_perps.txt
 scratch_metrics*.npz
 scratch_delisted_coverage.json
 logs/edge_*.out
+logs/obook/
+logs/obook_recorder.*
