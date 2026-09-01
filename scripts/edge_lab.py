@@ -164,7 +164,7 @@ def load_panel(paths, interval, end_date="", start_date=""):
     return P
 
 
-def build_indicators(P):
+def build_indicators(P, smoothe: int = 2):
     T, S = P["c"].shape
     keys = ("hma", "hma_up", "ema20", "ema50", "rsi", "bbu", "bbl", "bbm", "htf")
     ind = {k: np.full((T, S), np.nan) for k in keys}
@@ -183,8 +183,10 @@ def build_indicators(P):
                 cf[i] = cf[i - 1]
         h = hma(cf, 20)
         ind["hma"][:, j] = h
+        # 색 판정 = Pine `ma_up = out1 >= out1[smoothe]`. CM 기본 2, 블로그 권장 3~5.
+        k = max(1, int(smoothe))
         up = np.full(T, np.nan)
-        up[2:] = (h[2:] >= h[:-2]).astype(float)
+        up[k:] = (h[k:] >= h[:-k]).astype(float)
         ind["hma_up"][:, j] = up
         ind["ema20"][:, j] = ema(cf, 20)
         ind["ema50"][:, j] = ema(cf, 50)
@@ -298,6 +300,44 @@ def signals(P, I, FRM=None, M=None):
     htf_up, htf_dn = I["htf"] == 1, I["htf"] == 0
     put("CM + 4h정합", cm_l & htf_up, cm_s & htf_dn)
 
+    # 캔들이 HullMA 를 관통(Pine: Show Price Crossing = 노란 캔들). 아래 두 블록이 쓴다.
+    O = P["o"]
+    cr_up = (O < I["hma"]) & (C > I["hma"])
+    cr_dn = (O > I["hma"]) & (C < I["hma"])
+
+    # --- 블로그(rajya) 가 제시한 "스나이퍼 콤보" ------------------------------
+    # 출처: 사용자가 제공한 네이버 블로그 본문. 라이브 e3 와 **네 군데가 다르다**.
+    #   차트      15분봉        (라이브 3분봉)
+    #   1st MA    HullMA20      (같음)
+    #   2nd MA    4h EMA200     (라이브도 4h EMA200 필터 — 같음)
+    #   진입      HullMA 색이 **빨강->라임으로 전환** + 캔들이 HullMA 를 **관통**(노란 캔들)
+    #             (라이브는 `ma_up` **상태** + `close > hma` **상태**. 전환도 관통도 아니다)
+    #   스무딩    3~5 권장      (라이브/Pine 기본 2)  -> --cm-smoothe 로 뺀다
+    #
+    # 블로그 원문에 오류가 하나 있다: "Use Different Timeframe 을 **체크 해제**하고
+    # 240(4시간봉)으로 맞추라"고 적혀 있는데, 해제하면 상위봉을 안 쓴다. 4h EMA200 을
+    # 하위 차트에 얹으려면 **체크**해야 한다. 의도(4h EMA200 을 대추세로)로 구현한다.
+    #
+    # 사전 등록: 아래 4개만 본다. 결과를 보고 더 붙이지 않는다.
+    flip_l = up & ~np.roll(up, 1, axis=0)      # 직전봉 하락 -> 이번봉 상승 (빨강->라임)
+    flip_s = dn & ~np.roll(dn, 1, axis=0)
+    flip_l[0], flip_s[0] = False, False
+
+    def within(m, n):
+        """전환이 최근 n봉 안에 있었는가(전환봉 포함)."""
+        a = m.copy()
+        for i in range(1, n):
+            a |= np.roll(m, i, axis=0)
+        a[:n] = False
+        return a
+
+    put("[블로그] 색전환 단독", flip_l, flip_s)
+    put("[블로그] 색전환 + 4h정합", flip_l & htf_up, flip_s & htf_dn)
+    put("[블로그] 색전환+관통+4h (동일봉)",
+        flip_l & cr_up & htf_up, flip_s & cr_dn & htf_dn)
+    put("[블로그] 전환5봉내+관통+4h",
+        within(flip_l, 5) & cr_up & htf_up, within(flip_s, 5) & cr_dn & htf_dn)
+
     # --- 원칙 0 "교차" (문서에는 있는데 코드에 없던 축) ----------------------
     # CLAUDE.md 원칙 0 은 "HullMA20 방향/**교차**" 라고 적혀 있는데, 라이브 코드는
     # 교차를 한 번도 쓰지 않는다. scalp_bot_e3 의 cr_up/cr_down/crossed 는 계산되어
@@ -310,9 +350,6 @@ def signals(P, I, FRM=None, M=None):
     # MA 자체를 판정에 안 쓴다. 없는 축을 만들어 붙이지 않는다.
     #
     # 사전 등록: 아래 3개만 본다. 좋아 보이는 걸 더 찾아 붙이지 않는다.
-    O = P["o"]
-    cr_up = (O < I["hma"]) & (C > I["hma"])
-    cr_dn = (O > I["hma"]) & (C < I["hma"])
     put("[교차] 관통 단독", cr_up, cr_dn)
     put("[교차] 관통 + 방향정합", cr_up & up, cr_dn & dn)
     put("[교차] 관통 + 방향 + 4h정합",
@@ -523,6 +560,9 @@ def main():
     p.add_argument("--split", type=int, default=0, help="표본을 N등분해 국면별로 재측정")
     p.add_argument("--funding", default="", help="펀딩비 npz (쉼표 구분 가능)")
     p.add_argument("--metrics", default="", help="OI/포지셔닝 npz (edge_metrics.py 산출물)")
+    p.add_argument("--cm-smoothe", type=int, default=2,
+                   help="CM 색 판정 스무딩 `ma_up = out1 >= out1[smoothe]`. "
+                        "Pine/라이브 기본 2, 블로그 권장 3~5.")
     p.add_argument("--slip", type=float, default=0.02,
                    help="**편도** 슬리피지 가정 %%. 실측 불가라 가정치다(기본 0.02 "
                         "= 종전 왕복 0.04 가정과 동일). taker 선에만 왕복으로 더한다.")
@@ -556,7 +596,7 @@ def main():
     days = T * bar_min / 1440.0
     print(f"패널: {S}심볼 x {T}봉 ({a.interval}, 약 {days:.1f}일)\n")
 
-    I = build_indicators(P)
+    I = build_indicators(P, smoothe=a.cm_smoothe)
     # 펀딩은 신호보다 먼저 만든다 — 펀딩 캐리 신호가 이 값을 쓰기 때문이다.
     FD, FRM = {}, None
     if a.funding:
