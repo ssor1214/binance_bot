@@ -81,15 +81,31 @@ def load(paths, min_cover=0.8):
         a = tabs[s]
         for t, r in zip(a[:, 0].astype(np.int64), a[:, 1]):
             F[idx[t], j] = r
-    cover = np.mean(~np.isnan(F), axis=0)
-    keep = cover >= min_cover
-    return F[:, keep], [s for s, k in zip(syms, keep) if k], times
+    # [버그수정 2] 생존 심볼(전부 2026-08-31 까지)과 상장폐지 심볼(중앙값
+    # 2026-05-19 에 소멸)은 기간이 완전히 다르다. 전역 커버리지를 요구하면
+    # **아무도 통과하지 못한다**(실측 0심볼).
+    #
+    # 그리고 이 비대칭 자체가 **펀딩 캐리의 핵심 위험**이다 — 캐리 중인 심볼이
+    # 상장폐지되면 강제 청산이다. 그래서 심볼을 버리지 않고, **train 에 최소
+    # 표본이 있는 심볼은 모두 랭킹에 넣고**, holdout 에서는 살아 있는 동안의
+    # 펀딩만 계산한다(죽은 뒤는 포지션 없음 = 0 기여). 상위 K 중 몇 개가
+    # holdout 에서 죽는지는 따로 보고한다.
+    return F, syms, times
 
 
-def carry(F, cols, sl):
-    """구간 sl 에서 선택 심볼들의 정산 1회당 평균 펀딩(숏 수취 기준, %)."""
+def carry(F, cols, sl, dead_as_zero=True):
+    """구간 sl 에서 선택 심볼들의 정산 1회당 평균 펀딩(숏 수취 기준, %).
+
+    dead_as_zero: 상장폐지로 데이터가 없는 구간을 **0 기여**로 본다.
+    포지션이 강제 청산돼 그 자본이 놀았다는 뜻이고, NaN 으로 빼면
+    "죽은 심볼은 없었던 셈" 이 되어 생존편향이 된다.
+    """
     v = F[sl][:, cols]
-    if v.size == 0 or np.all(np.isnan(v)):
+    if v.size == 0:
+        return np.nan
+    if dead_as_zero:
+        return float(np.nanmean(np.nan_to_num(v, nan=0.0))) * 100.0
+    if np.all(np.isnan(v)):
         return np.nan
     return float(np.nanmean(v)) * 100.0
 
@@ -120,27 +136,35 @@ def main():
     with np.errstate(invalid="ignore"):
         tr_m = np.nanmean(F[tr], axis=0)
         ho_m = np.nanmean(F[ho], axis=0)
-    ok = ~np.isnan(tr_m) & ~np.isnan(ho_m)
-    r = float(np.corrcoef(tr_m[ok], ho_m[ok])[0, 1])
+    n_tr = np.sum(~np.isnan(F[tr]), axis=0)
+    n_ho_s = np.sum(~np.isnan(F[ho]), axis=0)
+    ok = (n_tr >= 30) & ~np.isnan(tr_m)          # 랭킹 자격: train 표본 30회 이상
+    alive = ok & (n_ho_s >= 30)                  # holdout 을 온전히 산 심볼
+    print(f"랭킹 자격(train>=30회) {int(ok.sum())}심볼 / "
+          f"그중 holdout 생존 {int(alive.sum())}심볼 "
+          f"({int(ok.sum()) - int(alive.sum())}개가 holdout 중 소멸)")
+    both = ok & ~np.isnan(ho_m)
+    r = float(np.corrcoef(tr_m[both], ho_m[both])[0, 1])
     print(f"[관문 2] train->holdout 심볼별 평균펀딩 상관 = {r:+.3f}")
     print()
 
     n_ho = T - cut
-    all_ho = float(np.nanmean(ho_m)) * 100
+    all_ho = carry(F, np.where(ok)[0], ho)
     print(f"{'K':>4}{'holdout 정산당%':>16}{'연율%':>10}{'보유기간 총%':>14}"
-          f"{'비용차감 후':>13}{'전체평균 대비':>14}")
+          f"{'비용차감 후':>13}{'전체평균 대비':>14}{'폐지수':>10}")
     rows = {}
     for K in [int(x) for x in a.ks.split(",")]:
         if K > int(ok.sum()):
             continue
         pick = np.argsort(-np.where(ok, tr_m, -np.inf))[:K]
+        dead = int(K - np.sum(alive[pick]))
         m = carry(F, pick, ho)
         tot = m * n_ho                      # 보유기간 전체 누적 %
         net = tot - cost
         yr = m * SETTLE_PER_YEAR
         rows[K] = (m, yr, tot, net)
         print(f"{K:>4}{m:>+16.5f}{yr:>+10.2f}{tot:>+14.3f}{net:>+13.3f}"
-              f"{(m - all_ho):>+14.5f}")
+              f"{(m - all_ho):>+14.5f}{dead:>10d}")
     print(f"{'전체':>4}{all_ho:>+16.5f}{all_ho * SETTLE_PER_YEAR:>+10.2f}"
           f"{all_ho * n_ho:>+14.3f}{all_ho * n_ho - cost:>+13.3f}")
     print()
