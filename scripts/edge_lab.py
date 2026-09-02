@@ -166,7 +166,8 @@ def load_panel(paths, interval, end_date="", start_date=""):
 
 def build_indicators(P, smoothe: int = 2):
     T, S = P["c"].shape
-    keys = ("hma", "hma_up", "ema20", "ema50", "rsi", "bbu", "bbl", "bbm", "htf")
+    keys = ("hma", "hma_up", "ema20", "ema50", "rsi", "bbu", "bbl", "bbm", "htf",
+            "ma5", "ma20", "ma60")
     ind = {k: np.full((T, S), np.nan) for k in keys}
     for j, s in enumerate(P["syms"]):
         c = P["c"][:, j]
@@ -189,6 +190,10 @@ def build_indicators(P, smoothe: int = 2):
         up[k:] = (h[k:] >= h[:-k]).astype(float)
         ind["hma_up"][:, j] = up
         ind["ema20"][:, j] = ema(cf, 20)
+        # 통상적인 5/20/60 이동평균 3종(사용자 요청 축). SMA 로 둔다.
+        for _len, _k in ((5, "ma5"), (20, "ma20"), (60, "ma60")):
+            _m, _ = roll_mean_std(cf, _len)
+            ind[_k][:, j] = _m
         ind["ema50"][:, j] = ema(cf, 50)
         ind["rsi"][:, j] = rsi_wilder(cf, 14)
         m, sd = roll_mean_std(cf, 20)
@@ -407,6 +412,23 @@ def signals(P, I, FRM=None, M=None):
     put("[순수볼밴] 단순터치 역추세", touch_l, touch_s)
     put("[순수볼밴] 단순터치 순추세", touch_s, touch_l)
     put("[순수볼밴] 스퀴즈 후 돌파", squeeze & touch_s, squeeze & touch_l)
+
+    # --- MA 5/20/60 + 볼밴 역추세 (CM 완전 배제) -----------------------------
+    # 사용자 요청: "CM 포기, 일반 볼밴 + 5/20/60 이동평균으로 역추세 스캘핑".
+    # 1분봉 기준 MA5=5분 / MA20=20분 / MA60=1시간 이라 스캘핑 축과 맞는다.
+    #
+    # 오늘 확인된 것: 추세 필터를 역추세 신호에 얹으면 **나빠졌다**
+    # (CM 기울기↑ + 중심선 +0.0041 vs 순수 볼밴 +0.0127). 그래서 배열 조건도
+    # 도움이 될지 해가 될지 모른다 -> **정배열/역배열을 짝으로** 등록해 사후 선택을 막는다.
+    #
+    # 사전 등록: 아래 3개만 본다. 결과를 보고 더 붙이지 않는다.
+    ma_up3 = (I["ma5"] > I["ma20"]) & (I["ma20"] > I["ma60"])     # 정배열
+    ma_dn3 = (I["ma5"] < I["ma20"]) & (I["ma20"] < I["ma60"])     # 역배열
+    bl, bu = C <= I["bbl"], C >= I["bbu"]
+    put("[MA576] 정배열 + 볼밴역추세", ma_up3 & bl, ma_dn3 & bu)
+    put("[MA576] 역배열 + 볼밴역추세", ma_dn3 & bl, ma_up3 & bu)
+    put("[MA576] 60선 위/아래 + 볼밴역추세",
+        (C > I["ma60"]) & bl, (C < I["ma60"]) & bu)
 
     # --- CM 반전(역추세) 계열 ------------------------------------------------
     # 사용자 요청: "CM 지표는 그대로 쓰고 역추세로 전환". 가장 단순한 형태는
