@@ -64,11 +64,15 @@ def main():
     p.add_argument("--sleep", type=float, default=0.35)
     p.add_argument("--out", default="scratch_edge_3m_30d.npz")
     p.add_argument("--symbols", default="")
+    p.add_argument("--symbols-file", default="", help="한 줄/쉼표 구분 심볼 목록 파일")
     p.add_argument("--min-frac", type=float, default=0.9,
                    help="요청 봉수 대비 이 비율 미만이면 건너뛴다")
     a = p.parse_args()
 
-    if a.symbols:
+    if a.symbols_file:
+        raw = pathlib.Path(a.symbols_file).read_text(encoding="utf-8")
+        syms = [x.strip().upper() for x in raw.replace(",", " ").split() if x.strip()]
+    elif a.symbols:
         syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     else:
         cache = json.load(open(ROOT / "logs/ws_worker_cache.json", encoding="utf-8"))

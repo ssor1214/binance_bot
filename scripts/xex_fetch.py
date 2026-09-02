@@ -113,8 +113,12 @@ def main():
     if a.symbols:
         syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     else:
+        # ws_worker_cache.json 은 {rows_by_symbol: {SYM: [...]}} 구조다.
         cache = json.load(open(ROOT / "logs/ws_worker_cache.json", encoding="utf-8"))
-        syms = [s for s in (cache.get("symbols") or cache.get("universe") or [])][:a.top]
+        rbs = cache.get("rows_by_symbol") or {}
+        syms = sorted(rbs, key=lambda k: -len(rbs[k] or []))[:a.top]
+        if not syms:
+            raise SystemExit("[중단] 심볼 목록을 못 읽었다")
     venues = [v.strip() for v in a.venues.split(",") if v.strip() in VENUES]
     end_ms = int(time.time() // 60 * 60 * 1000)
     start_ms = end_ms - int(a.days * 86400_000)
