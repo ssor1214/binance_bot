@@ -117,12 +117,30 @@ def main():
     ap.add_argument("--ks", default="5,10,15,20,30")
     ap.add_argument("--spot-rt", type=float, default=0.20, help="현물 왕복 수수료 %%")
     ap.add_argument("--perp-rt", type=float, default=0.04, help="선물 왕복 수수료 %%")
+    ap.add_argument("--min-vol-rank", type=int, default=0,
+                   help="유동성 필터: 거래대금 상위 N 심볼 안에서만 고른다. "
+                        "0 이면 필터 없음. scratch_volume_60d.json 이 필요하다. "
+                        "(사용자 요구: '비트 포함 거래량 많은 알트'. 그리고 예비 측정의 "
+                        "최대 우려가 '상위 펀딩 심볼이 저유동성 소형주'였다.)")
     ap.add_argument("--perm", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=20260901)
     a = ap.parse_args()
 
     paths = [x.strip() for x in a.funding.split(",") if x.strip()]
     F, syms, times = load(paths)
+    if a.min_vol_rank > 0:
+        import json as _json
+        vp = ROOT / "scratch_volume_60d.json"
+        if not vp.exists():
+            raise SystemExit("[중단] scratch_volume_60d.json 이 없다")
+        vol = _json.load(open(vp, encoding="utf-8"))
+        top = set(sorted(vol, key=lambda k: -vol[k])[:a.min_vol_rank])
+        keep = [i for i, s_ in enumerate(syms) if s_ in top]
+        if len(keep) < 10:
+            raise SystemExit(f"[중단] 유동성 필터 통과 {len(keep)}심볼")
+        F = F[:, keep]
+        syms = [syms[i] for i in keep]
+        print(f"유동성 필터: 거래대금 상위 {a.min_vol_rank} -> {len(syms)}심볼 남음")
     T, S = F.shape
     cut = int(T * a.train_frac)
     cost = a.spot_rt + a.perp_rt
