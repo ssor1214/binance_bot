@@ -117,59 +117,79 @@ def main():
     print(f"보유 {h}봉 / stride {h} / 위상 {h}개 / 5분위 / 순열 {a.perm}회")
     print("비용선: VIP+BNB 0.0216% / 현행 maker 0.0400%\n")
 
+    # --- 그룹평균을 bincount 로 벡터화한다 -------------------------------
+    # (성능 전용 변경. 사전등록한 절차·판정 기준은 그대로다. 종전 구현은 순열
+    #  500회 x 4축을 마스크 반복으로 돌아 실용 시간 안에 끝나지 않았다.)
+    N = ret.size
+
+    def group_mean(q, period, minc=50):
+        """(위상 x 분위) 평균 -> 분위별 위상평균. q<0 은 결측."""
+        m = period & (q >= 0)
+        g = (phase * a.nq + q)[m]
+        sw = np.bincount(g, weights=ret[m], minlength=h * a.nq)
+        cw = np.bincount(g, minlength=h * a.nq).astype(float)
+        with np.errstate(invalid="ignore"):
+            mu = np.where(cw > minc, sw / np.where(cw > 0, cw, 1), np.nan)
+        mu = mu.reshape(h, a.nq)
+        with np.errstate(invalid="ignore"):
+            return np.nanmean(mu, axis=0)      # 분위별 위상평균 (nq,)
+
+    def flat_mean(sel):
+        v = ret[sel]
+        return float(v.mean()) if v.size else float("nan")
+
     def pavg(sel):
-        """위상 전수 평균. sel 은 체결 단위 boolean."""
-        vals = [ret[sel & (phase == k)].mean()
-                for k in range(h) if (sel & (phase == k)).sum() > 50]
-        return float(np.mean(vals)) if vals else float("nan")
+        """위상 전수 평균(선별 없는 기준선용)."""
+        q0 = np.where(sel, 0, -1).astype(np.int64)
+        return float(group_mean(q0, np.ones(N, dtype=bool), minc=50)[0])
 
     base_tr, base_ho = pavg(tr), pavg(ho)
-    print(f"{'무선별 기준선':<16} train {base_tr:+.4f}   holdout {base_ho:+.4f}\n")
+    print(f"{'무선별 기준선':<16} train {base_tr:+.4f}   holdout {base_ho:+.4f}")
+    print()
 
     def quintile(x):
         """train 분위 경계로 나눈다(holdout 에 미래정보가 안 들어가게)."""
-        q = np.full(x.size, -1, dtype=np.int8)
+        q = np.full(x.size, -1, dtype=np.int64)
         good = ~np.isnan(x)
         edges = np.nanquantile(x[good & tr], np.linspace(0, 1, a.nq + 1)[1:-1])
         q[good] = np.searchsorted(edges, x[good])
         return q
 
-    print(f"{'축':<14}{'train 5분위 프로파일':<44}{'선택':>5}"
+    print(f"{'축':<14}{'train 5분위 프로파일':<46}{'선택':>5}"
           f"{'holdout':>10}{'상관':>8}{'순열백분위':>12}")
     rng = np.random.default_rng(20260902)
     for name, Fm in feats.items():
         x = Fm[ti, si]
         q = quintile(x)
-        prof_tr = [pavg(tr & (q == k)) for k in range(a.nq)]
-        prof_ho = [pavg(ho & (q == k)) for k in range(a.nq)]
+        prof_tr, prof_ho = group_mean(q, tr), group_mean(q, ho)
         pick = int(np.nanargmax(prof_tr))
         real = prof_ho[pick]
-        cor = np.corrcoef(prof_tr, prof_ho)[0, 1]
-        # 순열: feature 를 무작위로 섞고 같은 절차(train 최고분위 -> holdout)
+        ok = ~np.isnan(prof_tr) & ~np.isnan(prof_ho)
+        cor = (np.corrcoef(prof_tr[ok], prof_ho[ok])[0, 1] if ok.sum() > 2
+               else float("nan"))
         null = np.empty(a.perm)
         for b in range(a.perm):
-            xs = rng.permutation(x)
-            qs = quintile(xs)
-            pt = [pavg(tr & (qs == k)) for k in range(a.nq)]
-            null[b] = [pavg(ho & (qs == k)) for k in range(a.nq)][int(np.nanargmax(pt))]
-        pct = float((null < real).mean() * 100.0)
+            qs = quintile(rng.permutation(x))
+            pt = group_mean(qs, tr)
+            null[b] = group_mean(qs, ho)[int(np.nanargmax(pt))]
+        pct = float(np.nanmean(null < real) * 100.0)
         prof = " ".join(f"{v:+.4f}" for v in prof_tr)
-        print(f"{name:<14}{prof:<44}{pick + 1:>5}{real:>+10.4f}"
+        print(f"{name:<14}{prof:<46}{pick + 1:>5}{real:>+10.4f}"
               f"{cor:>+8.2f}{pct:>11.1f}%")
 
     # --- F5 심볼 (보강 13 의 대조군) ---------------------------------------
-    sym_tr = np.array([ret[tr & (si == j)].mean() if (tr & (si == j)).sum() > 200
-                       else np.nan for j in range(S)])
+    ssum = np.bincount(si, weights=ret * tr, minlength=S)
+    scnt = np.bincount(si, weights=tr.astype(float), minlength=S)
+    sym_tr = np.where(scnt > 200, ssum / np.where(scnt > 0, scnt, 1), np.nan)
     thr = np.nanquantile(sym_tr, 1 - 1.0 / a.nq)
-    top = np.zeros(S, dtype=bool)
-    top[~np.isnan(sym_tr)] = sym_tr[~np.isnan(sym_tr)] >= thr
-    real = pavg(ho & top[si])
+    top = np.nan_to_num(sym_tr, nan=-1e9) >= thr
+    real = flat_mean(ho & top[si])
     null = np.empty(a.perm)
     for b in range(a.perm):
-        sh = rng.permutation(top)
-        null[b] = pavg(ho & sh[si])
-    print(f"{'F5 심볼상위20%':<14}{'(train 심볼평균 상위 20% 를 고른다)':<44}"
-          f"{'-':>5}{real:>+10.4f}{'':>8}{float((null < real).mean() * 100):>11.1f}%")
+        null[b] = flat_mean(ho & rng.permutation(top)[si])
+    print(f"{'F5 심볼상위20%':<14}{'(train 심볼평균 상위 20% 를 고른다)':<46}"
+          f"{'-':>5}{real:>+10.4f}{'':>8}"
+          f"{float(np.nanmean(null < real) * 100):>11.1f}%")
 
 
 if __name__ == "__main__":
