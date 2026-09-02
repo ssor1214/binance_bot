@@ -85,3 +85,5 @@ logs/phase_sweep.txt
 logs/obook_run_*.out
 logs/obook_run_*.err
 logs/obook_watchdog.log
+scratch_*.npz
+scratch_*.json
