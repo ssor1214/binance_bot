@@ -46,7 +46,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from edge_lab import build_indicators, load_panel  # noqa: E402
 
 
-def race(P, I, sl_mode, sl_val, max_bars, stride, f1_lo, f1_hi, sl_min=0.0):
+def race(P, I, sl_mode, sl_val, max_bars, stride, f1_lo, f1_hi, sl_min=0.0,
+         tp_frac=1.0):
     """밴드 접촉 후 TP/SL 경주. -> (롱결과, 숏결과) 각각 dict."""
     C, H, L = P["c"], P["h"], P["l"]
     bbu, bbl, bbm = I["bbu"], I["bbl"], I["bbm"]
@@ -76,14 +77,18 @@ def race(P, I, sl_mode, sl_val, max_bars, stride, f1_lo, f1_hi, sl_min=0.0):
                 b_u, b_l, b_m = bbu[i, j], bbl[i, j], bbm[i, j]
                 if np.isnan(b_u) or np.isnan(b_m) or np.isnan(C[i, j]):
                     continue
+                # tp_frac: 밴드 -> 중심선 거리의 몇 %를 목표로 하는가.
+                # 1.0 = 중심선(e6 현행). 낮출수록 도달률이 오르고 건당 이익은 준다.
                 if side == "LONG":
                     if C[i, j] > b_l:
                         continue
-                    ent, tp = b_l, b_m
+                    ent = b_l
+                    tp = b_l + (b_m - b_l) * tp_frac
                 else:
                     if C[i, j] < b_u:
                         continue
-                    ent, tp = b_u, b_m
+                    ent = b_u
+                    tp = b_u - (b_u - b_m) * tp_frac
                 if ent <= 0:
                     continue
                 # 손절폭
@@ -150,6 +155,11 @@ def main():
     ap.add_argument("--fee-tp", type=float, default=0.04)
     ap.add_argument("--fee-sl", type=float, default=0.07)
     ap.add_argument("--fee-to", type=float, default=0.07)
+    ap.add_argument("--tp-fracs", default="0.25,0.4,0.6,0.8,1.0",
+                   help="밴드->중심선 거리의 목표 비율. **전부 보고한다** — "
+                        "하나를 고르면 그게 사후 선택이다.")
+    ap.add_argument("--sl-list", default="0.3,0.5",
+                   help="고정 손절폭(%%). 전부 보고한다.")
     ap.add_argument("--split", type=int, default=3)
     a = ap.parse_args()
 
@@ -162,24 +172,26 @@ def main():
     print()
     print(f"{'손절설정':<20}{'방향':>6}{'건수':>8}{'TP%':>7}{'SL%':>7}{'초과%':>7}"
           f"{'TP평균':>9}{'SL평균':>9}{'건당순':>10}")
-    combos = [("fixed", v, f"고정 {v}%") for v in (0.3, 0.5, 1.0)] + \
-             [("bw", v, f"밴드폭 x{v}") for v in (0.5, 1.0, 1.5)]
-    for mode, val, lbl in combos:
-        r = race(P, I, mode, val, a.max_bars, a.stride, a.f1_lo, a.f1_hi)
-        tot = []
-        for side in ("LONG", "SHORT"):
-            s = summarize(r[side], a.fee_tp, a.fee_sl, a.fee_to)
-            if s is None:
-                continue
-            tot += r[side]
-            print(f"{lbl:<20}{side:>6}{s['n']:>8}{s['tp']:>7.1f}{s['sl']:>7.1f}"
-                  f"{s['to']:>7.1f}{s['tp_avg']:>+9.3f}{s['sl_avg']:>+9.3f}"
-                  f"{s['net']:>+10.4f}")
-        st = summarize(tot, a.fee_tp, a.fee_sl, a.fee_to)
-        if st:
-            print(f"{'':<20}{'합계':>6}{st['n']:>8}{st['tp']:>7.1f}{st['sl']:>7.1f}"
-                  f"{st['to']:>7.1f}{st['tp_avg']:>+9.3f}{st['sl_avg']:>+9.3f}"
-                  f"{st['net']:>+10.4f}")
+    fracs = [float(x) for x in a.tp_fracs.split(",")]
+    combos = [("fixed", v, f"고정 {v}%") for v in
+              [float(x) for x in a.sl_list.split(",")]]
+    for frac in fracs:
+        print(f"--- TP = 밴드->중심선의 {frac:.0%} ---")
+        for mode, val, lbl in combos:
+            r = race(P, I, mode, val, a.max_bars, a.stride, a.f1_lo, a.f1_hi,
+                     tp_frac=frac)
+            for side in ("LONG", "SHORT"):
+                sm = summarize(r[side], a.fee_tp, a.fee_sl, a.fee_to)
+                if sm is None:
+                    continue
+                print(f"{lbl:<20}{side:>6}{sm['n']:>8}{sm['tp']:>7.1f}"
+                      f"{sm['sl']:>7.1f}{sm['to']:>7.1f}{sm['tp_avg']:>+9.3f}"
+                      f"{sm['sl_avg']:>+9.3f}{sm['net']:>+10.4f}")
+            st = summarize(r["LONG"] + r["SHORT"], a.fee_tp, a.fee_sl, a.fee_to)
+            if st:
+                print(f"{'':<20}{'합계':>6}{st['n']:>8}{st['tp']:>7.1f}"
+                      f"{st['sl']:>7.1f}{st['to']:>7.1f}{st['tp_avg']:>+9.3f}"
+                      f"{st['sl_avg']:>+9.3f}{st['net']:>+10.4f}")
         print()
     print("⚠ 진입은 '밴드에 닿으면 그 가격에 체결'로 가정했다. 실제 미체결·부분체결·")
     print("  역선택이 빠져 있으므로 **이 결과는 상한**이다.")
