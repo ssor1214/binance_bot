@@ -135,10 +135,11 @@ def main():
     print(f"비용선: 보수(taker) {line_t:.3f}% / e3(maker) {line_m:.3f}%")
     print()
 
-    def phase_stats(sg, fn, stride):
+    def phase_stats(sg, fn, stride, tlen=None):
+        tlen = sg.shape[0] if tlen is None else tlen
         rs = []
         for off in range(stride):
-            keep = np.zeros(T, dtype=bool)
+            keep = np.zeros(tlen, dtype=bool)
             keep[off::stride] = True
             m2 = np.where(keep[:, None], sg, 0).astype(np.int8)
             r = stats(m2, fn)
