@@ -37,18 +37,23 @@ def get(symbol, interval, limit, end, sleep):
     return []
 
 
-def rows(k):
+def rows(k, with_buyvol=False):
+    """바이낸스 kline 응답 -> 행렬. with_buyvol=True 면 컬럼 6 에
+    taker_buy_base_volume(원본 인덱스 9)을 추가한다 — 매수/매도 체결량 분리용."""
+    if with_buyvol:
+        return [[float(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4]),
+                 float(x[5]), float(x[9])] for x in k]
     return [[float(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4]), float(x[5])] for x in k]
 
 
-def fetch_back(symbol, interval, want, sleep):
+def fetch_back(symbol, interval, want, sleep, with_buyvol=False):
     """endTime 을 뒤로 밀며 want 개가 찰 때까지 과거로 긁는다."""
     out, end = [], None
     while len(out) < want:
         k = get(symbol, interval, 1500, end, sleep)
         if not k:
             break
-        r = rows(k)
+        r = rows(k, with_buyvol=with_buyvol)
         out = r + out
         end = int(r[0][0]) - 1
         if len(r) < 1500:
@@ -67,6 +72,8 @@ def main():
     p.add_argument("--symbols-file", default="", help="한 줄/쉼표 구분 심볼 목록 파일")
     p.add_argument("--min-frac", type=float, default=0.9,
                    help="요청 봉수 대비 이 비율 미만이면 건너뛴다")
+    p.add_argument("--with-buyvol", action="store_true",
+                   help="컬럼 6 에 taker_buy_base_volume 추가(매수/매도 체결량 분리용)")
     a = p.parse_args()
 
     if a.symbols_file:
@@ -84,7 +91,7 @@ def main():
 
     arrs, ok = {}, []
     for i, s in enumerate(syms, 1):
-        b = fetch_back(s, a.interval, want, a.sleep)
+        b = fetch_back(s, a.interval, want, a.sleep, with_buyvol=a.with_buyvol)
         b4 = fetch_back(s, "4h", want4h, a.sleep)
         if len(b) < want * a.min_frac or len(b4) < 260:
             print(f"[{i}/{len(syms)}] {s} SKIP (n={len(b)} 4h={len(b4)})", flush=True)
