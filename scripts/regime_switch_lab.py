@@ -186,8 +186,9 @@ def main():
 
     def stride_stats(sgn, fn, stride):
         rs = []
+        n_rows = sgn.shape[0]
         for off in range(stride):
-            keep = np.zeros(T, dtype=bool)
+            keep = np.zeros(n_rows, dtype=bool)
             keep[off::stride] = True
             m2 = np.where(keep[:, None], sgn, 0).astype(np.int8)
             r = stats(m2, fn)
@@ -220,8 +221,8 @@ def main():
                 sl = slice(k * step, (k + 1) * step if k < a.split - 1 else T)
                 print(f"  --- 구간 {k + 1}/{a.split} ---")
                 for name, sgn in SIG.items():
-                    sgx = sgn[sl]
-                    r = stride_stats(sgx, FN[h][sl], h)
+                    sgx = sgn[sl, :]
+                    r = stride_stats(sgx, FN[h][sl, :], h)
                     if r is None:
                         continue
                     n, m, med, tt, ts = r
