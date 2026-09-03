@@ -164,11 +164,18 @@ def build_e7_masks(P, I):
     return long_ok, short_ok, atr, bbm, bbl, bbu
 
 
-def race(P, long_ok, short_ok, atr, bbm, bbl, bbu, max_bars, stride, rowslice=None):
+def race(P, long_ok, short_ok, atr, bbm, bbl, bbu, max_bars, stride, rowslice=None,
+         sl_mult=0.5, sl_mode="max"):
+    """sl_mode: 'max' = e7 원본(밴드거리와 ATR*mult 중 큰 값, 손절을 넓히는 쪽)
+                'atr' = ATR*mult 만 사용(밴드거리 무시, mult 로 손절폭 직접 스윕)"""
     C, H, L = P["c"], P["h"], P["l"]
     if rowslice is not None:
         C, H, L = C[rowslice], H[rowslice], L[rowslice]
     T, S = C.shape
+    def calc_risk(dist_to_band, atr_val):
+        if sl_mode == "atr":
+            return atr_val * sl_mult
+        return max(dist_to_band, atr_val * sl_mult)
     out = {"LONG": [], "SHORT": []}
     for j in range(S):
         for i in range(0, T - 1, stride):
@@ -180,11 +187,11 @@ def race(P, long_ok, short_ok, atr, bbm, bbl, bbu, max_bars, stride, rowslice=No
                     continue
                 if side == "LONG":
                     tp = bbm[i, j]
-                    risk = max(ent - bbl[i, j], atr[i, j] * 0.5)
+                    risk = calc_risk(ent - bbl[i, j], atr[i, j])
                     sl = ent - risk
                 else:
                     tp = bbm[i, j]
-                    risk = max(bbu[i, j] - ent, atr[i, j] * 0.5)
+                    risk = calc_risk(bbu[i, j] - ent, atr[i, j])
                     sl = ent + risk
                 if np.isnan(tp) or np.isnan(sl) or risk <= 0:
                     continue
@@ -273,6 +280,32 @@ def main():
         if st:
             print(f"  합계   n={st['n']:5d}  건당순{st['net']:+8.4f}")
         print()
+
+    print("=== SL 스윕: ATR 배수만으로 손절폭 직접 조정 (밴드거리 무시, TP=중심선 고정) ===")
+    print("비용: e7 자체가정(왕복 0.08%)")
+    for mult in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0):
+        r_sw = race(P, long_ok, short_ok, atr, bbm, bbl, bbu, a.max_bars, a.stride,
+                    sl_mult=mult, sl_mode="atr")
+        tot_sw = r_sw["LONG"] + r_sw["SHORT"]
+        s_sw = summarize(tot_sw, 0.08, 0.08, 0.08)
+        if s_sw is None:
+            print(f"  ATR x{mult:<5} 표본 없음")
+            continue
+        print(f"  ATR x{mult:<5} n={s_sw['n']:5d}  TP{s_sw['tp']:5.1f}%  "
+              f"SL{s_sw['sl']:5.1f}%  TO{s_sw['to']:5.1f}%  건당순{s_sw['net']:+8.4f}")
+    print()
+    print("=== SL 스윕: e7 원본(max(밴드거리,ATR*mult)) 배수만 조정 ===")
+    for mult in (0.25, 0.5, 1.0, 1.5, 2.0):
+        r_sw = race(P, long_ok, short_ok, atr, bbm, bbl, bbu, a.max_bars, a.stride,
+                    sl_mult=mult, sl_mode="max")
+        tot_sw = r_sw["LONG"] + r_sw["SHORT"]
+        s_sw = summarize(tot_sw, 0.08, 0.08, 0.08)
+        if s_sw is None:
+            print(f"  max(band,ATRx{mult:<5}) 표본 없음")
+            continue
+        print(f"  max(band,ATRx{mult:<5}) n={s_sw['n']:5d}  TP{s_sw['tp']:5.1f}%  "
+              f"SL{s_sw['sl']:5.1f}%  TO{s_sw['to']:5.1f}%  건당순{s_sw['net']:+8.4f}")
+    print()
 
     if a.split > 1:
         T2 = T
