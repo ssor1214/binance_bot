@@ -115,10 +115,13 @@ def build_e7_masks(P, I):
     print("  거래량/범위 필터 계산 중...")
 
     def prev_mean20(X):
+        # cs[k] = sum(X[0:k]); s20[m] = sum(X[m:m+20]) for m=0..T-20 (길이 T-19).
+        # 그 창은 "현재봉 바로 앞" 위치인 out[m+20] 에 배정한다(길이 T-20 필요
+        # -> s20 마지막 원소는 대응할 자리가 없어 버린다).
         cs = np.vstack([np.zeros((1, S)), np.cumsum(np.nan_to_num(X), axis=0)])
         cnt = np.vstack([np.zeros((1, S)), np.cumsum(~np.isnan(X), axis=0)])
-        s20 = cs[20:] - cs[:-20]
-        n20 = cnt[20:] - cnt[:-20]
+        s20 = (cs[20:] - cs[:-20])[:-1]
+        n20 = (cnt[20:] - cnt[:-20])[:-1]
         out = np.full((T, S), np.nan)
         with np.errstate(invalid="ignore", divide="ignore"):
             out[20:] = np.where(n20 >= 15, s20 / np.maximum(n20, 1), np.nan)
