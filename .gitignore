@@ -87,3 +87,4 @@ logs/obook_run_*.err
 logs/obook_watchdog.log
 scratch_*.npz
 scratch_*.json
+state/

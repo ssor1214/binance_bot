@@ -60,6 +60,8 @@ from bot.exchange import Exchange
 from bot.ws_client import FileBackedKlineCache
 
 VERSION = "e3"
+STRATEGY_LABEL = "CM방향+눌림실행"
+RUNTIME_STATUS_EXTRA = ""
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LEDGER = LOG_DIR / "scalp_bot_e3_cm_ledger.jsonl"
 # [2026-08-20 버그4] e2 가 관리하는 심볼 목록. 재시작 시 남의 포지션을 채택하지 않기 위함.
@@ -339,6 +341,19 @@ def tranche_targets(ind: dict, side: str, tranches: int,
         return base[:1]
     base[1] = cand
     return base
+
+
+def effective_min_leg_margin(args, balance: float) -> float:
+    """Return the configured minimum first-leg margin."""
+    if getattr(args, "tiered_min_leg_margin", False):
+        if balance < 200.0:
+            return 25.0
+        if balance < 300.0:
+            return 35.0
+        return 50.0
+    if getattr(args, "dynamic_min_leg_margin", False):
+        return 5.0 + balance * 0.15
+    return args.min_leg_margin
 
 
 def widened_stop(entry: float, stop: float, side: str, widen_pct: float) -> float:
@@ -1972,6 +1987,10 @@ def main() -> int:
     # 슬롯 수를 "1차당 증거금 >= min-leg-margin" 이 되도록 역산한다.
     p.add_argument("--min-leg-margin", type=float, default=35.0,
                    help="e3 슬롯 1차 진입 최소 증거금(USDT). 기본 35")
+    p.add_argument("--dynamic-min-leg-margin", action="store_true",
+                   help="잔고 연동 하한: 100USDT=20, 200USDT=35 (e5 전용)")
+    p.add_argument("--tiered-min-leg-margin", action="store_true",
+                   help="e6 계층 하한: 100~200=25, 200~300=35, 300+=50 USDT")
     # [2026-08-25 버그수정] --min-leg-margin 은 "하한"일 뿐이고 실제 크기는
     # `잔고 x max_exposure / slots` 다. slots 는 int(잔고*노출//하한) 이라 잔고가 줄면
     # 함께 줄고, 그러면 건당 증거금이 오히려 커진다 — 진입할수록 다음 진입이 커지는
@@ -1990,6 +2009,8 @@ def main() -> int:
                    help="1차당 증거금 상한(USDT). 0=상한 없음. min 과 같게 두면 고정 크기")
     p.add_argument("--max-new-orders-per-cycle", type=int, default=0,
                    help="한 스캔 사이클 신규 진입 발주 상한. 0=무제한")
+    p.add_argument("--skip-log-sec", type=float, default=600.0,
+                   help="스킵/진입 집계 로그 주기(초)")
     p.add_argument("--adopt-unowned-positions", action="store_true", default=False,
                    help="상태파일에 없는 계좌 포지션도 채택. 기본값은 수동 포지션 보호를 위해 비활성")
     p.add_argument("--max-exposure", type=float, default=0.95)
@@ -2213,6 +2234,9 @@ def main() -> int:
     ws_ready_deadline = 0.0
     ws_next_check_at = 0.0
     ws_bad_since = 0.0
+    # WS health가 나쁜 동안에는 기존 포지션 관리만 허용하고 신규 진입은 막는다.
+    # 과거 캐시로 실주문이 나가는 것을 방지한다.
+    ws_health_bad = False
     ws_last_restart_at = 0.0
     ws_restart_count = 0
     reconcile_next_at = 0.0
@@ -2242,7 +2266,7 @@ def main() -> int:
         for _s in symbols:
             _HTF_WANTED.add(_s)
         start_htf_refresher(ex, args.cm_htf_interval, args.cm_htf_ema, say)
-    say(f"시작 [{mode}] CM방향+눌림실행 / 잔고 {bal0:.4f} / {args.leverage}배 / "
+    say(f"시작 [{mode}] {STRATEGY_LABEL} / 잔고 {bal0:.4f} / {args.leverage}배 / "
         f"{len(symbols)}심볼 / 분할{args.tranches}차 / 손익비{args.rr}")
 
     positions: dict[str, Pos] = {}
@@ -2626,11 +2650,15 @@ def main() -> int:
         # [2026-08-20] 채택 직후 바로 저장한다. 안 하면 포지션 변동이 한 번도
         # 없는 상태에서 또 재시작할 때 진입시각이 유실돼 보유시간이 리셋된다.
         save_state()
-        # 포지션이 없는 심볼에 남은 손절주문은 고아다. 나중에 따로 발동할 수 있고,
-        # 어긋난 수량이 그대로 남아 있는 경우도 있다(실측 BOMEUSDT qty=277,809).
+        # 상태파일에 없는 포지션은 수동 포지션일 수 있다. adopt 옵션이 꺼진
+        # 상태에서 그 심볼의 보호 손절을 고아로 단정해 삭제하면 전략 전환/재시작
+        # 순간에 수동 포지션 보호가 끊긴다. 수동 보호를 보존하고, 명시적으로
+        # adopt 모드일 때만 기존 동작(고아 손절 정리)을 허용한다.
         _orphan = 0
         for _sm, _ids in _existing_stops.items():
             if _sm in positions:
+                continue
+            if not args.adopt_unowned_positions:
                 continue
             for _o in _ids:
                 try:
@@ -2657,6 +2685,8 @@ def main() -> int:
                 entries.append((_p2.entered_at, _p2.side))
         entries.sort()
     deadline = (time.time() + args.minutes * 60) if args.minutes > 0 else float("inf")
+    scan_beat_at = time.time()
+    scan_seen = 0
     n_align = n_entry = n_exit = 0
     run_started_at = time.time()      # 정합성 대조의 기준 시각
     cooldown: dict[str, float] = {}
@@ -3433,9 +3463,13 @@ def main() -> int:
             try:
                 if act == "status":
                     tg.answer(cq, "상태 전송")
+                    _pend = ", ".join(sorted(pending.keys())[:8])
+                    _status_extra = RUNTIME_STATUS_EXTRA() if callable(RUNTIME_STATUS_EXTRA) else RUNTIME_STATUS_EXTRA
+                    _extra = (f"\n{_status_extra}" if _status_extra else "")
                     say(f"보유{len(positions)} 대기{len(pending)} "
+                        + (f"대기심볼[{_pend}] " if _pend else "")
                         + (f"보호미등록{len(unprotected)} " if unprotected else "")
-                        + ("일시정지 중" if paused else "가동 중"))
+                        + ("일시정지 중" if paused else "가동 중") + _extra)
                 elif act == "brief":
                     tg.answer(cq, "브리핑 전송")
                     say(brief_text(ex.get_total_margin_balance()))
@@ -3459,14 +3493,36 @@ def main() -> int:
             except Exception as e:
                 say(f"버튼 처리 오류({act}): {e}")
 
+    # Telegram polling must not wait for the sequential market scan.
+    _telegram_poll_lock = threading.Lock()
+    _handle_buttons_main = handle_buttons
+    def handle_buttons():
+        if not _telegram_poll_lock.acquire(blocking=False):
+            return
+        try:
+            _handle_buttons_main()
+        finally:
+            _telegram_poll_lock.release()
+
+    def _telegram_loop():
+        while True:
+            try:
+                handle_buttons()
+            except Exception as _e:
+                log_line(f"Telegram polling 오류: {_e}")
+            time.sleep(1.0)
+
     if tg and args.buttons:
         tg.poll()          # 재시작 전에 눌려 있던 묵은 입력은 버린다
         tg.menu()
+        threading.Thread(target=lambda: _telegram_loop(), daemon=True,
+                         name="telegram-poll").start()
     atexit.register(release_bot_lock)
 
     def reset_ws_warmup(now_ts: float) -> None:
-        nonlocal ws_ready, ws_ready_count, ws_ready_deadline, ws_next_check_at, ws_bad_since
+        nonlocal ws_ready, ws_ready_count, ws_ready_deadline, ws_next_check_at, ws_bad_since, ws_health_bad
         ws_ready = False
+        ws_health_bad = True
         ws_ready_count = 0
         ws_ready_deadline = now_ts + 100.0
         ws_next_check_at = now_ts
@@ -3871,7 +3927,7 @@ def main() -> int:
             sweep_orphan_tp_orders()
             # [2026-08-25 안3 판정용] 10분마다 스킵 사유를 남긴다. 지금까지 이 값이
             # 종료 시에만 찍혀서, 라이브가 신호를 얼마나 버리는지 관측할 수 없었다.
-            if time.time() - skips_logged_at >= 600:
+            if time.time() - skips_logged_at >= max(1.0, args.skip_log_sec):
                 skips_logged_at = time.time()
                 _tot = sum(skips.values())
                 if _tot or n_entry:
@@ -3893,6 +3949,7 @@ def main() -> int:
                 # 짧게 잡아야 한다.
                 _stale = _last_msg > 0 and (_now - _last_msg) > 60.0
                 _bad = _stale or _consec >= 50 or _err_60s >= 500 or (_msg_60s == 0 and _last_msg > 0 and (_now - _last_msg) > 10.0)
+                ws_health_bad = bool(_bad)
                 if _bad:
                     if ws_bad_since <= 0:
                         ws_bad_since = _now
@@ -3917,10 +3974,11 @@ def main() -> int:
                     ex.set_ws_kline_cache(ws_cache)
                     say(f"WS 준비 완료 {ready}/{len(canary)} - 실시간 스캔/신규 진입 재개")
                 elif time.time() >= ws_ready_deadline:
-                    ws_ready = True
+                    # 준비 실패 상태에서 강제 진행하지 않는다. 포지션 관리만 유지한다.
+                    ws_ready = False
                     ex.set_ws_kline_cache(ws_cache)
                     say(f"경고: WS 준비 미완료 {ready}/{len(canary)} - "
-                        "최대 대기 100초 도달, 강제 진행")
+                        "신규 진입 차단 유지")
             bal = ex.get_total_margin_balance()
             # [2026-08-21 P0] 거래소 손절주문(STOP_MARKET)이 발동해 포지션이 닫히면
             # 봇은 그 사실을 모르고 원장에 아무것도 남기지 않았다. 그 결과 원장에는
@@ -3931,8 +3989,9 @@ def main() -> int:
             # [2026-08-20] 3분할 진입은 1차당 명목도 최소명목(5.0)을 넘어야 한다.
             # 슬롯8이면 1차 명목이 3.63으로 미달해 주문이 안 나간다.
             # 1차 증거금 = 잔고 x (노출/슬롯) / 차수  ->  x레버리지 >= 5.0x1.12
+            _min_leg = effective_min_leg_margin(args, bal)
             need_per_leg = max(args.min_notional / args.leverage * 1.12,
-                               args.min_leg_margin) * args.tranches
+                               _min_leg) * args.tranches
             slots = max(1, min(int(bal * args.max_exposure // need_per_leg),
                                args.max_concurrency))
             size = args.max_exposure / slots
@@ -3953,7 +4012,10 @@ def main() -> int:
                 # 보유시간별 성적이 0~5분 승률 63% vs 5~20분 29% 로 갈리는데,
                 # 그 사이에 무슨 일이 일어나는지가 기록되지 않아 임계값을 못 정한다.
                 _held = now_ts - pos.entered_at
-                for _mk in (60, 120, 180, 300, 420, 600, 900, 1200):
+                # 진입 직후 역선택을 분리해서 본다. 1분봉 집계만으로는
+                # 체결 직후 5~15초의 불리한 움직임을 놓치므로 초 단위
+                # mark-price 폴링 구간을 별도로 기록한다.
+                for _mk in (5, 15, 30, 60, 120, 180, 300, 420, 600, 900, 1200):
                     if _held >= _mk and str(_mk) not in pos.roe_marks:
                         pos.roe_marks[str(_mk)] = round(roe, 3)
                 why = early_cut_reason(
@@ -4232,9 +4294,18 @@ def main() -> int:
                 scan_offset = (scan_offset + max(1, len(symbols) // 3)) % len(symbols)
             new_orders_this_cycle = 0
             for sym in _scan_order:
+                scan_seen += 1
+                if tg and args.buttons:
+                    handle_buttons()
+                if time.time() - scan_beat_at >= 30.0:
+                    log_line(f"스캔 heartbeat 심볼{scan_seen}/{len(_scan_order)} "
+                             f"보유{len(positions)} 대기{len(pending)}")
+                    scan_beat_at = time.time()
                 if time.time() > deadline:
                     break
-                if args.ws and not ws_ready:
+                if args.ws and (not ws_ready or ws_health_bad):
+                    if ws_health_bad:
+                        skips["WS헬스불량"] += 1
                     continue
                 if (args.max_new_orders_per_cycle > 0
                         and new_orders_this_cycle >= args.max_new_orders_per_cycle):
@@ -4379,6 +4450,13 @@ def main() -> int:
                         pending.pop(sym, None)
                         continue
                 stop = ind["e25"]
+                # 고정 손절을 사용하는 전략은 이후 최종 손절 계산뿐 아니라
+                # 아래의 사전 손절선통과 검사도 동일한 방향/가격을 사용해야 한다.
+                # 역추세 e6에서 EMA25를 그대로 검사하면 롱/숏 모두 후보가
+                # 손절선통과로 선제 차단된다.
+                if args.stop_fixed_roe > 0 and entry > 0 and args.leverage > 0:
+                    _stop_dist = args.stop_fixed_roe / 100.0 / args.leverage
+                    stop = entry * (1 - _stop_dist if L else 1 + _stop_dist)
                 risk = abs(entry - stop) / entry
                 # 손절폭이 너무 좁으면 노이즈에 바로 털린다
                 # [2026-08-27] **고정폭 손절을 쓰면 이 필터의 전제가 깨진다.**
@@ -4469,7 +4547,8 @@ def main() -> int:
                 # 잡힌다. 그때 1/3 만 넣으면 그 차수의 자본이 통째로 누락된다.
                 # 아직 집행하지 않은 차수만큼(_new_legs) 곱해서 넣는다.
                 _new_legs = max(1, len(pd["legs"]) - pd.get("done", 0))
-                margin = max(args.min_leg_margin, bal * size / args.tranches * _new_legs)
+                _min_leg = effective_min_leg_margin(args, bal)
+                margin = max(_min_leg, bal * size / args.tranches * _new_legs)
                 _pre_mult = margin          # 축소배율 적용 전 값(하한 로그 판정용)
                 # [2026-08-26] 진입 우위(신호봉 종가 대비)가 부족하면 크기를 줄인다.
                 # **차단하지 않는다** - 차단하면 통과율 35%로 거래수가 65% 줄어
@@ -4515,7 +4594,7 @@ def main() -> int:
                 # 들어갈 거면 하한은 지킨다.
                 # 하한이 배율보다 커서 축소가 무력해지는 잔고대가 있다는 것은
                 # 감수한다 - 그건 하한/상한을 조정할 문제지 슬롯을 낭비할 이유가 아니다.
-                _margin_floor = args.min_leg_margin
+                _margin_floor = effective_min_leg_margin(args, bal)
                 if (not _cm_tp_valid and args.cm_invalid_tp_min_margin > 0):
                     _margin_floor = min(_margin_floor, args.cm_invalid_tp_min_margin)
                 if margin < _margin_floor:
@@ -4568,13 +4647,18 @@ def main() -> int:
                                 pending.pop(sym, None)
                                 continue
                         try:
+                            _attempt_at = time.time()
+                            say(f"진입주문 시도 {sym} {side} qty={qty} price={price:.8g} "
+                                f"health={'bad' if ws_health_bad else 'ok'}")
                             ex.set_leverage(sym, args.leverage)
                             _oid, _px = place_limit_entry_nowait(ex, sym, side, qty)
                         except Exception as e:
-                            say(f"진입실패 {sym}: {e}")
+                            say(f"진입주문 거래소등록 실패 {sym}: {e}")
                             pending.pop(sym, None)
                             continue
                         if not _oid:
+                            say(f"진입주문 거래소등록 실패 {sym}: order_id 없음 "
+                                f"발주소요{time.time()-_attempt_at:.2f}s")
                             pending.pop(sym, None)
                             continue
                         entry_orders[sym] = {
@@ -4585,8 +4669,9 @@ def main() -> int:
                             "placed_at": time.time(), "signal_at": float(pd.get("since") or time.time()),
                             "price": _px,
                         }
-                        say(f"진입주문 발주 {sym} {side} 신호후{time.time() - entry_orders[sym]['signal_at']:.1f}s "
-                            f"TTL{args.entry_order_ttl_sec:.0f}s")
+                        say(f"진입주문 거래소등록 성공 {sym} {side} orderId={_oid} "
+                            f"신호후{time.time() - entry_orders[sym]['signal_at']:.1f}s "
+                            f"발주소요{time.time()-_attempt_at:.2f}s TTL{args.entry_order_ttl_sec:.0f}s")
                         new_orders_this_cycle += 1
                         # 주문을 낸 즉시 상태파일에 남긴다. 체결과 재시작 사이의 틈에서
                         # 무보호 고아 포지션이 생기는 것을 막는다(ONGUSDT 실사고).

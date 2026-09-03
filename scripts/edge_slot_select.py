@@ -44,6 +44,7 @@ p=0.31). "골라보니 좋더라"는 표본 안에서는 **항상** 성립한다
 import argparse
 import pathlib
 import sys
+import time
 
 import numpy as np
 
@@ -158,6 +159,19 @@ def main():
     print(f"{'축':<14}{'train 5분위 프로파일':<46}{'선택':>5}"
           f"{'holdout':>10}{'상관':>8}{'순열백분위':>12}")
     rng = np.random.default_rng(20260902)
+    total_perm = len(feats) * a.perm + a.perm
+    done_perm = 0
+    progress_started = time.monotonic()
+
+    def show_progress(force=False):
+        """순열 계산 진행률을 콘솔에 즉시 표시한다."""
+        elapsed = time.monotonic() - progress_started
+        pct = done_perm / total_perm * 100.0 if total_perm else 100.0
+        if force or done_perm == total_perm or done_perm % max(1, a.perm // 20) == 0:
+            print(f"[진행률] {done_perm:,}/{total_perm:,} ({pct:5.1f}%) "
+                  f"경과 {elapsed:.0f}초", flush=True)
+
+    print(f"[진행률] 전체 순열 {total_perm:,}회 시작", flush=True)
     for name, Fm in feats.items():
         x = Fm[ti, si]
         q = quintile(x)
@@ -172,6 +186,8 @@ def main():
             qs = quintile(rng.permutation(x))
             pt = group_mean(qs, tr)
             null[b] = group_mean(qs, ho)[int(np.nanargmax(pt))]
+            done_perm += 1
+            show_progress()
         pct = float(np.nanmean(null < real) * 100.0)
         prof = " ".join(f"{v:+.4f}" for v in prof_tr)
         print(f"{name:<14}{prof:<46}{pick + 1:>5}{real:>+10.4f}"
@@ -187,6 +203,8 @@ def main():
     null = np.empty(a.perm)
     for b in range(a.perm):
         null[b] = flat_mean(ho & rng.permutation(top)[si])
+        done_perm += 1
+        show_progress()
     print(f"{'F5 심볼상위20%':<14}{'(train 심볼평균 상위 20% 를 고른다)':<46}"
           f"{'-':>5}{real:>+10.4f}{'':>8}"
           f"{float(np.nanmean(null < real) * 100):>11.1f}%")
