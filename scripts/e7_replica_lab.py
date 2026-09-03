@@ -164,8 +164,10 @@ def build_e7_masks(P, I):
     return long_ok, short_ok, atr, bbm, bbl, bbu
 
 
-def race(P, long_ok, short_ok, atr, bbm, bbl, bbu, max_bars, stride):
+def race(P, long_ok, short_ok, atr, bbm, bbl, bbu, max_bars, stride, rowslice=None):
     C, H, L = P["c"], P["h"], P["l"]
+    if rowslice is not None:
+        C, H, L = C[rowslice], H[rowslice], L[rowslice]
     T, S = C.shape
     out = {"LONG": [], "SHORT": []}
     for j in range(S):
@@ -279,7 +281,8 @@ def main():
         for k in range(a.split):
             s0, s1 = k * step, (k + 1) * step if k < a.split - 1 else T2
             r2 = race(P, long_ok[s0:s1], short_ok[s0:s1], atr[s0:s1], bbm[s0:s1],
-                      bbl[s0:s1], bbu[s0:s1], a.max_bars, a.stride)
+                      bbl[s0:s1], bbu[s0:s1], a.max_bars, a.stride,
+                      rowslice=slice(s0, s1))
             tot2 = r2["LONG"] + r2["SHORT"]
             st2 = summarize(tot2, 0.08, 0.08, 0.08)
             if st2:
