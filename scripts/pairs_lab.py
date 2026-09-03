@@ -42,44 +42,67 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from edge_lab import FEE_MAKER_RT, FEE_TAKER_RT, load_panel  # noqa: E402
 
 
-def rolling_z(spread, window=1440):
-    """직전 window 분 rolling z-score(현재값 제외). 심볼별 아니라 1개 시계열."""
+def rolling_z(spread, window=1440, min_frac=0.9):
+    """직전 window 분 rolling z-score(현재값 제외). 완전 벡터화, **NaN 안전**.
+
+    [2026-09-04 P0 버그수정] np.cumsum 은 NaN 을 만나면 그 뒤 전부를 NaN 으로
+    오염시킨다. 최초 구현은 이를 놓쳐 **결측이 단 하나라도 있는 쌍은 그 시점
+    이후 z 가 통째로 NaN** 이 됐다(3,240쌍 중 결측 0개인 BTC-ETH 단 하나만
+    살아남고 나머지는 전부 진입 0건으로 죽어 있었다). 결측을 0 기여로 치환하고
+    **유효 개수를 따로 누적**해 그 창 안의 실제 평균/분산만 쓴다."""
     n = len(spread)
     z = np.full(n, np.nan)
-    cs = np.concatenate([[0.0], np.cumsum(spread)])
-    cs2 = np.concatenate([[0.0], np.cumsum(spread * spread)])
-    for i in range(window, n):
-        s1 = cs[i] - cs[i - window]
-        s2 = cs2[i] - cs2[i - window]
-        m = s1 / window
-        v = max(s2 / window - m * m, 1e-12)
-        z[i] = (spread[i] - m) / np.sqrt(v)
+    if n <= window:
+        return z
+    valid = ~np.isnan(spread)
+    sv = np.where(valid, spread, 0.0)
+    cs = np.concatenate([[0.0], np.cumsum(sv)])
+    cs2 = np.concatenate([[0.0], np.cumsum(sv * sv)])
+    cc = np.concatenate([[0.0], np.cumsum(valid.astype(np.float64))])
+    s1 = (cs[window:] - cs[:-window])[:-1]     # k=0..n-window-1
+    s2 = (cs2[window:] - cs2[:-window])[:-1]
+    cnt = (cc[window:] - cc[:-window])[:-1]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        m = s1 / cnt
+        v = np.maximum(s2 / cnt - m * m, 1e-12)
+        zz = (spread[window:] - m) / np.sqrt(v)
+    zz = np.where(cnt >= window * min_frac, zz, np.nan)
+    z[window:] = zz
     return z
 
 
 def pair_returns(pa, pb, cut, z_thr, horizons):
-    """한 쌍의 (전체구간) 스프레드 신호 -> 지평별 (train, holdout) 반환 리스트."""
+    """한 쌍의 (전체구간) 스프레드 신호 -> 지평별 (train, holdout) 반환 리스트.
+    완전 벡터화 — entries 를 한 번에 찾고 지평마다 배열 연산으로 처리한다."""
     ok = ~np.isnan(pa) & ~np.isnan(pb) & (pa > 0) & (pb > 0)
     if ok.mean() < 0.9:
         return None
     logs = np.log(np.where(ok, pa, np.nan)) - np.log(np.where(ok, pb, np.nan))
     z = rolling_z(logs, 1440)
     n = len(pa)
-    out = {h: {"train": [], "holdout": []} for h in horizons}
-    for i in range(1440, n - max(horizons) - 1):
-        zz = z[i]
-        if np.isnan(zz) or abs(zz) < z_thr:
-            continue
-        direction = -1 if zz > 0 else 1     # z>0: A고평가->A숏(-1)+B롱 / z<0: 반대
-        for h in horizons:
-            j = i + h
-            if j >= n or np.isnan(pa[j]) or np.isnan(pb[j]) or np.isnan(pa[i]) or np.isnan(pb[i]):
-                continue
-            ra = (pa[j] / pa[i] - 1) * 100 * direction
-            rb = (pb[j] / pb[i] - 1) * 100 * (-direction)
-            r = ra + rb    # 페어 스프레드 수익률(달러중립 가정)
-            bucket = "train" if i < cut else "holdout"
-            out[h][bucket].append((i, r))
+    hmax = max(horizons)
+    entries = np.where(np.abs(z) >= z_thr)[0]
+    entries = entries[(entries >= 1440) & (entries < n - hmax - 1)]
+    if entries.size == 0:
+        return {h: {"train": [], "holdout": []} for h in horizons}
+    direction = np.where(z[entries] > 0, -1.0, 1.0)   # z>0: A고평가->A숏 / z<0: 반대
+    out = {}
+    for h in horizons:
+        j = entries + h
+        pa_i, pb_i, pa_j, pb_j = pa[entries], pb[entries], pa[j], pb[j]
+        valid = (~np.isnan(pa_i) & ~np.isnan(pb_i) & ~np.isnan(pa_j) & ~np.isnan(pb_j)
+                 & (pa_i > 0) & (pb_i > 0))
+        with np.errstate(invalid="ignore"):
+            ra = (pa_j / pa_i - 1) * 100 * direction
+            rb = (pb_j / pb_i - 1) * 100 * (-direction)
+        r = ra + rb
+        idx_v = entries[valid]
+        r_v = r[valid]
+        is_train = idx_v < cut
+        out[h] = {
+            "train": list(zip(idx_v[is_train].tolist(), r_v[is_train].tolist())),
+            "holdout": list(zip(idx_v[~is_train].tolist(), r_v[~is_train].tolist())),
+        }
     return out
 
 
